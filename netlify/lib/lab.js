@@ -14,13 +14,13 @@ const PROFILES = {
   zona: { name: 'M15-ZONA', desc: 'LIMIT di tepi zona H1, hanya terisi jika candle M15 menolak zona (tutup kembali searah), sesi aktif, TP 2R + BE.', on: true, entry: 'limit', hMin: 6, mMin: 0, exit: 'tp', tpR: 2, beR: 1, room: true, sess: [7, 20], cool: 8, reject: true, maxOpen: 3 },
   selektif: { name: 'M15-SELEKTIF', desc: 'Market hanya jika M15 7/7, H1 7/8, ada ruang ke target H1, sesi aktif, jeda setelah rugi. Sedikit trade, kualitas tinggi.', on: true, entry: 'market', hMin: 7, mMin: 7, exit: 'tp', tpR: 2, beR: 1, room: true, sess: [7, 20], cool: 8, reject: false, maxOpen: 3 }
 };
-const DEF = { enabled: true, costR: 0.1, profiles: {} };
-const fresh = () => ({ open: {}, pend: {}, trades: {}, elig: {}, until: {}, used: {}, last: {}, log: [], since: Date.now(), lastRun: null });
+const DEF = { enabled: true, costR: 0.1, onlyExness: true, profiles: {} };
+const fresh = () => ({ open: {}, pend: {}, trades: {}, elig: {}, until: {}, used: {}, skip: {}, last: {}, log: [], since: Date.now(), lastRun: null });
 
 const getCfg = async store => {
   const c = (await store.get('config', { type: 'json' }).catch(() => null)) || {};
   const profiles = {}; for (const id of Object.keys(PROFILES)) profiles[id] = { ...PROFILES[id], ...((c.profiles || {})[id] || {}) };
-  return { enabled: c.enabled !== false, costR: isFinite(c.costR) ? +c.costR : DEF.costR, profiles };
+  return { enabled: c.enabled !== false, costR: isFinite(c.costR) ? +c.costR : DEF.costR, onlyExness: c.onlyExness !== false, profiles };
 };
 const getState = async store => ({ ...fresh(), ...((await store.get('state', { type: 'json' }).catch(() => null)) || {}) });
 const hourOf = t => { const h = parseInt(String(t).slice(11, 13), 10); return isFinite(h) ? h : null; };
@@ -157,12 +157,16 @@ async function summary(store, tstore) {
   ];
   for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { entry: P.entry, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
   const pending = []; for (const [id, P] of Object.entries(cfg.profiles)) for (const q of (st.pend[id] || [])) { const px = (st.last[q.s] || {}).price; pending.push({ plan: P.name, s: q.s, dir: q.dir, entry: q.entry, sl: q.sl, tp: q.tp, bars: q.bars, price: px != null ? px : null, distPct: px ? +(Math.abs(px - q.entry) / px * 100).toFixed(2) : null }); }
-  return { cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, pending, rows, log: st.log.slice(0, 30), recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 8)])) };
+  return { cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, skip: st.skip || {}, pending, rows, log: st.log.slice(0, 30), recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 8)])) };
 }
 
 // ---------- pemindaian ----------
-const defaultLoader = async (store, sym, tcfg) => {
-  const src = await core.pickSource(sym, [tcfg.ltf, tcfg.htf]);
+const defaultLoader = async (store, sym, tcfg, labCfg = {}) => {
+  const ivs = [tcfg.ltf, tcfg.htf], src = await core.pickSource(sym, ivs);
+  // Lab hanya memakai data Exness (bila EA dipakai) agar zona dan plan tidak berganti-ganti antara dua feed harga, dan agar kuota Twelve Data tidak terpakai.
+  if (labCfg.onlyExness !== false && (process.env.DATA_SOURCE || 'twelve') !== 'twelve' && src !== 'exness') {
+    const e = new Error('dilewati: data Exness belum siap (' + ((await core.sourceWhy(sym, ivs)) || 'tidak diketahui') + ')'); e.skip = true; throw e;
+  }
   const v = (await core.candles(sym, tcfg.ltf, 100, 50000, src)).slice(0, -1), vh = await tower.htfData(store, sym, tcfg.htf, src);
   return { v, vh, src };
 };
@@ -173,18 +177,23 @@ async function runLab(store, tstore, mt5, manual, loader = defaultLoader) {
   try {
     const cfg = await getCfg(store), tcfg = await tower.getCfg(tstore);
     if (!cfg.enabled || (!tcfg.enabled && !manual)) return { skipped: 'nonaktif' };
+    core.setStore(tstore); // arahkan core ke penyimpanan data EA (px_*); tanpa ini pickSource selalu memilih Twelve Data
     const st = await getState(store), specs = mt5 ? ((await mt5.get('account_report', { type: 'json' }).catch(() => null)) || {}).specs : null;
     const syms = (Array.isArray(tcfg.symbols) ? tcfg.symbols : []).filter((it, i, a) => it && it.s && a.findIndex(x => x && String(x.s).toUpperCase().replace(/[^A-Z0-9]/g, '') === String(it.s).toUpperCase().replace(/[^A-Z0-9]/g, '')) === i).slice(0, 6);
     for (const it of syms) {
       const sym = it.s, asset = tower.assetOf(sym, it.a);
       if (!tower.marketOpen(asset)) continue;
       try {
-        const { v, vh, src } = await loader(tstore, sym, tcfg), lastT = v[v.length - 1].t;
+        const { v, vh, src } = await loader(tstore, sym, tcfg, cfg), lastT = v[v.length - 1].t;
         if ((st.last[sym] || {}).t === lastT) continue; // belum ada candle M15 baru
         const g = core.god(vh, v, tcfg.rr, { h: tcfg.htf, l: tcfg.ltf, m15Min: 1 });
         for (const [id, P] of Object.entries(cfg.profiles)) { if (P.on) stepProfile(st, id, P, cfg, sym, g, v, specs, asset); }
         st.last[sym] = { t: lastT, status: g.status, hOk: g.h.ok, mOk: g.m.ok, price: v[v.length - 1].c, dir: g.dir, src: src || null, at: Date.now() };
-      } catch (e) { ev(st, 'ERR', `${sym}: ${String(e.message).slice(0, 80)}`); }
+        if (st.skip) delete st.skip[sym];
+      } catch (e) {
+        if (e.skip) { st.skip = st.skip || {}; if (st.skip[sym] !== e.message) { st.skip[sym] = e.message; ev(st, 'SKIP', `${sym} ${e.message}`.slice(0, 140)); } }
+        else ev(st, 'ERR', `${sym}: ${String(e.message).slice(0, 80)}`);
+      }
     }
     st.lastRun = Date.now(); await store.setJSON('state', st);
     return { ok: true };
@@ -197,6 +206,7 @@ async function setConfig(store, body) {
   const cur = (await store.get('config', { type: 'json' }).catch(() => null)) || {}, nx = { ...cur, profiles: { ...(cur.profiles || {}) } };
   if (typeof body.enabled === 'boolean') nx.enabled = body.enabled;
   if (isFinite(body.costR)) nx.costR = clamp(body.costR, 0, 1);
+  if (typeof body.onlyExness === 'boolean') nx.onlyExness = body.onlyExness;
   for (const [id, x] of Object.entries(body.profiles || {})) {
     if (!PROFILES[id] || !x || typeof x !== 'object') continue; const p = nx.profiles[id] = { ...(nx.profiles[id] || {}) };
     if (typeof x.on === 'boolean') p.on = x.on;

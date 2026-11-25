@@ -261,3 +261,8 @@ Sumber script tidak bisa dibuka; dasarnya INPUT dari screenshot (ALMA 2/5/0.85, 
 - Tabel perbandingan: jumlah trade, winrate + batas bawah interval 95%, ekspektasi (R/trade), profit factor, max drawdown, WR 20 terakhir, dan status. Baris H1 dan M15 Control Tower hanya DIBACA sebagai pembanding (R dikurangi biaya spread yang sama).
 - Semua angka dalam R setelah biaya spread (dari spesifikasi EA bila ada, selain itu biaya tetap). Jam sesi mengikuti stempel waktu candle sumber data, cek apakah itu waktu broker atau UTC.
 - Batas simulasi: tidak ada slippage dan swap; bila SL dan TP tersentuh di candle yang sama dihitung SL; BE aktif mulai candle berikutnya. Di bawah 30 trade per plan belum bisa disimpulkan.
+
+## Pembaruan v14q: perbaikan sumber data M15 Lab
+- Bug: lab tidak mengarahkan `core` ke penyimpanan data EA, sehingga `pickSource` selalu memilih Twelve Data (terutama pada tombol "Jalankan lab sekarang", yang berjalan di fungsi terpisah). Diperbaiki dengan `core.setStore(tstore)` di `runLab`.
+- Opsi baru "hanya data Exness" (default aktif): simbol yang data Exness-nya belum segar DILEWATI dengan alasan di panel, tidak jatuh ke Twelve Data. Mencegah campuran dua feed harga dan pemakaian kuota Twelve Data oleh lab.
+- Setelah deploy, tekan "Reset lab" sekali: pembatalan plan yang terjadi saat lab memakai feed Twelve Data tidak mewakili data Exness.
