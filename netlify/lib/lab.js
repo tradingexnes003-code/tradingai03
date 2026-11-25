@@ -156,7 +156,8 @@ async function summary(store, tstore) {
     { id: 'base_m15', name: 'M15 di Control Tower sekarang', base: true, ...stats(b.m15) }
   ];
   for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { entry: P.entry, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
-  return { cfg, since: st.since, lastRun: st.lastRun, rows, log: st.log.slice(0, 30), recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 8)])) };
+  const pending = []; for (const [id, P] of Object.entries(cfg.profiles)) for (const q of (st.pend[id] || [])) { const px = (st.last[q.s] || {}).price; pending.push({ plan: P.name, s: q.s, dir: q.dir, entry: q.entry, sl: q.sl, tp: q.tp, bars: q.bars, price: px != null ? px : null, distPct: px ? +(Math.abs(px - q.entry) / px * 100).toFixed(2) : null }); }
+  return { cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, pending, rows, log: st.log.slice(0, 30), recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 8)])) };
 }
 
 // ---------- pemindaian ----------
@@ -178,11 +179,11 @@ async function runLab(store, tstore, mt5, manual, loader = defaultLoader) {
       const sym = it.s, asset = tower.assetOf(sym, it.a);
       if (!tower.marketOpen(asset)) continue;
       try {
-        const { v, vh } = await loader(tstore, sym, tcfg), lastT = v[v.length - 1].t;
+        const { v, vh, src } = await loader(tstore, sym, tcfg), lastT = v[v.length - 1].t;
         if ((st.last[sym] || {}).t === lastT) continue; // belum ada candle M15 baru
         const g = core.god(vh, v, tcfg.rr, { h: tcfg.htf, l: tcfg.ltf, m15Min: 1 });
         for (const [id, P] of Object.entries(cfg.profiles)) { if (P.on) stepProfile(st, id, P, cfg, sym, g, v, specs, asset); }
-        st.last[sym] = { t: lastT, status: g.status, hOk: g.h.ok, mOk: g.m.ok };
+        st.last[sym] = { t: lastT, status: g.status, hOk: g.h.ok, mOk: g.m.ok, price: v[v.length - 1].c, dir: g.dir, src: src || null, at: Date.now() };
       } catch (e) { ev(st, 'ERR', `${sym}: ${String(e.message).slice(0, 80)}`); }
     }
     st.lastRun = Date.now(); await store.setJSON('state', st);

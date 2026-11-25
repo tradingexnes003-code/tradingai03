@@ -34,11 +34,26 @@ async function pickSource(sym, ivs) {
     return ivs.every(iv => d.tf && d.tf[TFM[iv]] && d.tf[TFM[iv]].length >= 70) ? 'exness' : 'twelve';
   } catch (e) { return 'twelve'; }
 }
+// Alasan sebuah simbol memakai Twelve Data padahal DATA_SOURCE=auto (null bila memang Exness atau mode bukan auto). Hanya untuk tampilan.
+async function sourceWhy(sym, ivs) {
+  if ((process.env.DATA_SOURCE || 'twelve') !== 'auto') return null;
+  const name = exName(sym);
+  try {
+    if (!_store) return 'penyimpanan data EA tidak tersedia';
+    const d = await _store.get('px_' + name, { type: 'json' });
+    if (!d) return `EA belum pernah mengirim ${name}`;
+    const q = Number(d.q || 0) * 1000;
+    if (!q) return `EA mengirim ${name} tanpa tick`;
+    const age = (Date.now() - q) / 60000;
+    if (age > staleMin()) return `tick ${name} basi ${Math.round(age)} menit`;
+    const miss = ivs.filter(iv => !(d.tf && d.tf[TFM[iv]] && d.tf[TFM[iv]].length >= 70)).map(iv => `${TFM[iv]} ${((d.tf && d.tf[TFM[iv]]) || []).length}/70`);
+    return miss.length ? `candle kurang: ${miss.join(', ')}` : null;
+  } catch (e) { return 'gagal membaca data EA'; }
+}
 async function ingest(store, body) {
   if (!body || !Array.isArray(body.d)) throw new Error('format salah');
-  let n = 0;
-  for (const it of body.d.slice(0, 12)) {
-    const name = String(it.s || '').replace(/[^\w.#-]/g, '').slice(0, 24); if (!name) continue;
+  const one = async it => {
+    const name = String(it.s || '').replace(/[^\w.#-]/g, '').slice(0, 24); if (!name) return 0;
     const cur = (await store.get('px_' + name, { type: 'json' }).catch(() => null)) || { tf: {} };
     for (const [tf, bars] of Object.entries(it.tf || {})) {
       if (!['M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'D1'].includes(tf) || !Array.isArray(bars)) continue;
@@ -48,9 +63,11 @@ async function ingest(store, body) {
     }
     // q = timestamp tick broker (Unix seconds); hanya update jika benar-benar ada tick.
     if (Number.isFinite(it.q) && it.q > 0) cur.q = it.q;
-    cur.u = Date.now(); await store.setJSON('px_' + name, cur); n++;
-  }
-  return { ok: true, n };
+    cur.u = Date.now(); await store.setJSON('px_' + name, cur); return 1;
+  };
+  // Diproses paralel: tiap simbol punya kunci sendiri. Sebelumnya berurutan, sehingga kiriman penuh 7 simbol x 4 timeframe bisa menembus batas waktu fungsi dan simbol terakhir tidak tersimpan.
+  const r = await Promise.all(body.d.slice(0, 12).map(it => one(it).catch(() => 0)));
+  return { ok: true, n: r.reduce((a, b) => a + b, 0) };
 }
 // Nama simbol untuk Twelve Data (cadangan): ubah nama mentah MT5 ke format Twelve Data, mis. XAUUSD -> XAU/USD, BTCUSDm -> BTC/USD.
 const tdName = s => {
@@ -284,4 +301,4 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
     tp1: f(tpOut), tp2: EXIT || tp2 === null ? null : f(tp2), tp: f(tpOut), tpRef: f(tp1), rr, minRR, status, dist, trig: status === 'SIAP ENTRY',
     supply: zz(supZ), demand: zz(demZ), skorTrend: sT, skorPotensi: sP, skor, entryEligible, planEligible: skor >= 70 };
 }
-module.exports = { G62, g62, resampleAlt, alma, ema, atr, rsi, pivots, candles, scan, validate, god, auth, owner, view, res, setStore, blobs, ingest, exName, pickSource };
+module.exports = { G62, g62, resampleAlt, alma, ema, atr, rsi, pivots, candles, scan, validate, god, auth, owner, view, res, setStore, blobs, ingest, exName, pickSource, sourceWhy };
