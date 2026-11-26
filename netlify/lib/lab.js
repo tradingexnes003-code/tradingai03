@@ -4,7 +4,7 @@
 // - Semua hasil dalam satuan R (1R = jarak entry ke SL), sudah dikurangi biaya spread, supaya adil dibandingkan antar plan.
 const core = require('./core');
 const tower = require('./tower');
-const { SIGS, EXTRA, guardSl } = require('./labsig');
+const { SIGS, EXTRA, guardSl, htfDir } = require('./labsig');
 
 const BAD = ['TERLEWAT', 'BATAL', 'PASAR SEPI'];
 const BAR_MIN = 15;
@@ -40,8 +40,8 @@ function costOf(specs, sym, risk, costR) {
 }
 
 function close(st, id, p, res, px, lastT, costR) {
-  const risk = Math.abs(p.entry - p.sl0) || 1e-9, gross = sgn(p.dir) * (px - p.entry) / risk, R = +(gross - p.cost).toFixed(2);
-  (st.trades[id] = st.trades[id] || []).unshift({ s: p.s, dir: p.dir, entry: p.entry, sl: p.sl0, tp: p.tp, res, exit: px, R, cost: p.cost, tOpen: p.tOpen, tClose: Date.now(), bar: p.t0, hour: hourOf(p.t0), hOk: p.hOk, mOk: p.mOk, be: !!p.be, trl: !!p.trl, sig: p.sig || null });
+  const risk = Math.abs(p.entry - p.sl0) || 1e-9, gross = sgn(p.dir) * (px - p.entry) / risk, R = +(gross - p.cost).toFixed(2), pct = +(sgn(p.dir) * (px - p.entry) / p.entry * 100).toFixed(3);
+  (st.trades[id] = st.trades[id] || []).unshift({ s: p.s, dir: p.dir, entry: p.entry, sl: p.sl0, tp: p.tp, res, exit: px, R, cost: p.cost, tOpen: p.tOpen, tClose: Date.now(), bar: p.t0, hour: hourOf(p.t0), hOk: p.hOk, mOk: p.mOk, be: !!p.be, trl: !!p.trl, sig: p.sig || null, pct, tb: lastT });
   if (st.trades[id].length > 200) st.trades[id].length = 200;
   st.open[id] = (st.open[id] || []).filter(x => x !== p);
   return R;
@@ -143,6 +143,30 @@ function stepProfile(st, id, P, cfg, sym, g, v, specs, asset, vh = []) {
   }
 }
 
+// ---------- Uji Trading God62 Baru: stop-and-reverse ----------
+function stepFlip(st, id, P, cfg, sym, g, v, specs, asset, vh = []) {
+  const x = v[v.length - 1], lastT = x.t, price = x.c, key = id + '|' + sym, A = core.atr(v), state = g.g62 && g.g62.state;
+  st.open[id] = st.open[id] || []; st.flip = st.flip || {};
+  if (!state || !(A > 0)) return;
+  const prev = st.flip[key], seen = (st.last[sym] || {}).t; st.flip[key] = state;
+  const ms = t => Date.parse(String(t).replace(' ', 'T') + 'Z'), gap = seen ? (ms(lastT) - ms(seen)) / 60000 : 0, d = price > 1000 ? 2 : price > 100 ? 3 : 5;
+  // 1) posisi terbuka: SL keras (bila ada), lalu keluar saat God 62 berbalik
+  for (const p of st.open[id].filter(o => o.s === sym)) {
+    let res = null, px = null; const b = sgn(p.dir), news = v.filter(c => c.t > p.lastT);
+    if (p.hard) { for (const c of news) { p.bars++; if (b > 0 ? c.l <= p.sl : c.h >= p.sl) { res = 'SL'; px = p.sl; break; } } } else p.bars += news.length;
+    p.lastT = lastT;
+    if (!res && p.dir !== state) { res = 'FLIP'; px = price; }
+    if (res) { const R = close(st, id, p, res, px, lastT, cfg.costR), t = st.trades[id][0]; ev(st, id, `${sym} ${p.dir} ditutup ${res} ${t.pct > 0 ? '+' : ''}${t.pct}% (${R > 0 ? '+' : ''}${R}R)`); }
+  }
+  // 2) masuk hanya pada pembalikan nyata yang terlihat oleh lab (bukan menebak posisi sebelum lab jalan)
+  if (!prev || prev === state || st.open[id].some(o => o.s === sym)) return;
+  if (gap > 45) { ev(st, id, `${sym} flip ${state} terlewat (data terakhir ${Math.round(gap)} menit lalu), menunggu flip berikutnya`); return; }
+  if (P.trendFilter && htfDir(vh) !== state) { ev(st, id, `${sym} flip ${state} dilewati: tidak searah tren EMA H1`); return; }
+  const unit = P.riskAtr * A, buy = state === 'BUY', sl0 = +(buy ? price - unit : price + unit).toFixed(d);
+  st.open[id].push({ s: sym, a: asset, dir: state, entry: price, sl: P.hardSl ? sl0 : null, sl0, tp: null, tOpen: Date.now(), t0: lastT, lastT, bars: 0, cost: costOf(specs, sym, unit, cfg.costR), hOk: g.h.ok, mOk: g.m.ok, be: false, atr: A, hard: !!P.hardSl, sig: 'flip' });
+  ev(st, id, `${sym} FLIP → ${state} @${price}${P.hardSl ? ' SL ' + sl0 : ' (tanpa SL)'} (candle ${lastT})`);
+}
+
 // ---------- statistik ----------
 function wilsonLow(w, n) { if (!n) return 0; const z = 1.96, p = w / n, d = 1 + z * z / n, c = p + z * z / (2 * n), a = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)); return Math.max(0, (c - a) / d); }
 function stats(tr, minN = 30) {
@@ -154,6 +178,9 @@ function stats(tr, minN = 30) {
   const SES = { asia: [0, 7], london: [7, 13], ny: [13, 20], malam: [20, 24] }, ses = {};
   for (const [k, [a, b]] of Object.entries(SES)) { const q = tr.filter(x => x.hour != null && x.hour >= a && x.hour < b); if (q.length) ses[k] = { n: q.length, wr: Math.round(q.filter(x => x.R > 0).length / q.length * 100), R: +q.reduce((s, x) => s + x.R, 0).toFixed(1) }; }
   const r20 = tr.slice(0, 20), wr20 = r20.length ? Math.round(r20.filter(x => x.R > 0).length / r20.length * 100) : null;
+  const pr = tr.filter(x => x.pct != null), avg = a => (a.length ? +(a.reduce((s, x) => s + x.pct, 0) / a.length).toFixed(3) : null);
+  const avgPct = avg(pr), avgWinPct = avg(pr.filter(x => x.pct > 0)), avgLossPct = avg(pr.filter(x => x.pct <= 0)), totPct = pr.length ? +pr.reduce((s, x) => s + x.pct, 0).toFixed(2) : null;
+  const bySym = {}; tr.forEach(x => { const o = bySym[x.s] = bySym[x.s] || { n: 0, w: 0, R: 0 }; o.n++; if (x.R > 0) o.w++; o.R += x.R; }); Object.values(bySym).forEach(o => { o.wr = Math.round(o.w / o.n * 100); o.R = +o.R.toFixed(1); });
   const sy = new Set(tr.map(x => x.s)).size, mean = a => (a.length ? a.reduce((s, x) => s + x.R, 0) / a.length : 0), hf = Math.floor(n / 2), expNew = mean(tr.slice(0, hf)), expOld = mean(tr.slice(hf));
   let verdict;
   if (n < minN) verdict = `data kurang (${n}/${minN})`;
@@ -162,7 +189,7 @@ function stats(tr, minN = 30) {
     const why = []; if (pf < 1.2) why.push('PF rendah'); if (lo < 0.35) why.push('WR belum meyakinkan'); if (sy < 3) why.push(`baru ${sy} simbol`); if (!(expNew > 0 && expOld > 0)) why.push('tidak konsisten antar-paruh');
     verdict = why.length ? 'positif, belum teruji: ' + why.join(', ') : 'layak dilanjutkan';
   } else verdict = 'belum layak';
-  return { n, w, l, wr: Math.round(w / n * 100), wrLow: Math.round(lo * 100), exp: +exp.toFixed(2), pf: +pf.toFixed(2), dd: +dd.toFixed(1), tot: +tot.toFixed(1), res, ses, wr20, sy, verdict };
+  return { n, w, l, wr: Math.round(w / n * 100), wrLow: Math.round(lo * 100), exp: +exp.toFixed(2), pf: +pf.toFixed(2), dd: +dd.toFixed(1), tot: +tot.toFixed(1), res, ses, wr20, sy, avgPct, avgWinPct, avgLossPct, totPct, bySym, verdict };
 }
 
 // Baseline dari Control Tower (hanya dibaca): H1 plan dan M15 yang sedang berjalan, R dikurangi biaya yang sama.
@@ -178,9 +205,10 @@ async function summary(store, tstore) {
     { id: 'base_h1', name: 'H1 plan (Control Tower, real-paper)', base: true, ...stats(b.h1) },
     { id: 'base_m15', name: 'M15 di Control Tower sekarang', base: true, ...stats(b.m15) }
   ];
-  for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { entry: P.entry, sig: P.sig, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
+  for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { riskAtr: P.riskAtr, hardSl: P.hardSl, trendFilter: P.trendFilter, entry: P.entry, sig: P.sig, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
+  const openPos = {}; for (const [id, P] of Object.entries(cfg.profiles)) if (P.entry === 'flip') openPos[id] = (st.open[id] || []).map(p => { const px = (st.last[p.s] || {}).price; return { s: p.s, dir: p.dir, entry: p.entry, since: p.t0, price: px != null ? px : null, pct: px ? +(sgn(p.dir) * (px - p.entry) / p.entry * 100).toFixed(2) : null }; });
   const pending = []; for (const [id, P] of Object.entries(cfg.profiles)) for (const q of (st.pend[id] || [])) { const px = (st.last[q.s] || {}).price; pending.push({ plan: P.name, s: q.s, dir: q.dir, entry: q.entry, sl: q.sl, tp: q.tp, bars: q.bars, price: px != null ? px : null, distPct: px ? +(Math.abs(px - q.entry) / px * 100).toFixed(2) : null }); }
-  return { cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, skip: st.skip || {}, pending, rows, log: st.log.slice(0, 30), recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 8)])) };
+  return { cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, skip: st.skip || {}, pending, rows, log: st.log.slice(0, 30), openPos, recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 12)])) };
 }
 
 // ---------- pemindaian ----------
@@ -210,7 +238,7 @@ async function runLab(store, tstore, mt5, manual, loader = defaultLoader) {
         const { v, vh, src } = await loader(tstore, sym, tcfg, cfg), lastT = v[v.length - 1].t;
         if ((st.last[sym] || {}).t === lastT) continue; // belum ada candle M15 baru
         const g = core.god(vh, v, tcfg.rr, { h: tcfg.htf, l: tcfg.ltf, m15Min: 1 });
-        for (const [id, P] of Object.entries(cfg.profiles)) { if (P.on) stepProfile(st, id, P, cfg, sym, g, v, specs, asset, vh); }
+        for (const [id, P] of Object.entries(cfg.profiles)) { if (P.on) (P.entry === 'flip' ? stepFlip : stepProfile)(st, id, P, cfg, sym, g, v, specs, asset, vh); }
         st.last[sym] = { t: lastT, status: g.status, hOk: g.h.ok, mOk: g.m.ok, price: v[v.length - 1].c, dir: g.dir, src: src || null, vol: v.slice(-21).every(x => x.vol > 0) ? 'tick' : 'proxy', at: Date.now() };
         if (st.skip) delete st.skip[sym];
       } catch (e) {
@@ -233,7 +261,10 @@ async function setConfig(store, body) {
   for (const [id, x] of Object.entries(body.profiles || {})) {
     if (!PROFILES[id] || !x || typeof x !== 'object') continue; const p = nx.profiles[id] = { ...(nx.profiles[id] || {}) };
     if (typeof x.on === 'boolean') p.on = x.on;
-    if (['market', 'limit'].includes(x.entry) && PROFILES[id].entry !== 'sig') p.entry = x.entry;
+    if (['market', 'limit'].includes(x.entry) && !['sig', 'flip'].includes(PROFILES[id].entry)) p.entry = x.entry;
+    if (isFinite(x.riskAtr)) p.riskAtr = clamp(x.riskAtr, 1, 6);
+    if (typeof x.hardSl === 'boolean') p.hardSl = x.hardSl;
+    if (typeof x.trendFilter === 'boolean') p.trendFilter = x.trendFilter;
     if (isFinite(x.volX)) p.volX = clamp(x.volX, 1.1, 5);
     if (isFinite(x.trail)) p.trail = clamp(x.trail, 0, 5);
     if (isFinite(x.trailAt)) p.trailAt = clamp(x.trailAt, 0, 3);
@@ -251,4 +282,4 @@ async function setConfig(store, body) {
 }
 const reset = store => store.setJSON('state', fresh());
 
-module.exports = { PROFILES, getCfg, getState, runLab, summary, setConfig, reset, stepProfile, stats, fresh, costOf };
+module.exports = { PROFILES, getCfg, getState, runLab, summary, setConfig, reset, stepProfile, stepFlip, stats, fresh, costOf };

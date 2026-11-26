@@ -127,6 +127,15 @@ const EXTRA = {
   trail: { ...base, name: 'M15-ASIS-TRAIL', desc: 'Entry ASIS, tanpa TP tetap: SL mengekor 1.5 ATR setelah +1R; keluar bila SL mengekor kena atau God 62 berbalik.', entry: 'market', sig: null, mMin: 6, exit: 'g62', tpR: 0, beR: 0, trail: 1.5, trailAt: 1, sess: null, cool: 0 }
 };
 
+// Uji Trading God62 Baru: stop-and-reverse seperti strategy TradingView "God 62 PERSONAL" (selalu ada posisi; masuk saat God 62 M15x8 berbalik, keluar saat berbalik lagi).
+// 1R virtual = riskAtr x ATR(14) M15, hanya untuk membandingkan dengan plan lain. Varian tanpa SL meniru TradingView apa adanya.
+const flipBase = { on: true, entry: 'flip', sig: null, hMin: 0, mMin: 0, exit: 'g62', tpR: 0, beR: 0, room: false, sess: null, cool: 0, reject: false, maxOpen: 6, riskAtr: 3, hardSl: false, trendFilter: false };
+Object.assign(EXTRA, {
+  g62tv: { ...flipBase, name: 'GOD62-BARU', desc: 'Persis seperti trade TradingView: masuk di harga saat God 62 (M15 x 8) berbalik, keluar saat berbalik lagi, tanpa SL dan tanpa filter. 1R virtual = 3 ATR.' },
+  g62sl: { ...flipBase, name: 'GOD62-BARU+SL', hardSl: true, desc: 'Sama, tetapi ada SL keras 3 ATR (versi yang aman dipakai di MT5). Menunjukkan harga perlindungan SL.' },
+  g62tf: { ...flipBase, name: 'GOD62-BARU+TREN-H1', trendFilter: true, desc: 'Sama, tetapi hanya masuk bila arah flip searah tren EMA20/50 H1. Menguji apakah filter H1 membantu atau malah mengurangi hasil.' }
+});
+
 // Jaga SL tidak terlalu rapat (<0.8 ATR) atau terlalu lebar (>3 ATR). Mengembalikan SL yang disesuaikan atau null bila tidak layak.
 function guardSl(dir, entry, sl, A, pad = 0) {
   const buy = dir === 'BUY'; let s = buy ? sl - pad * A : sl + pad * A, risk = Math.abs(entry - s);

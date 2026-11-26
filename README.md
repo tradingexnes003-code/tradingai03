@@ -272,3 +272,9 @@ Sumber script tidak bisa dibuka; dasarnya INPUT dari screenshot (ALMA 2/5/0.85, 
 - Status "layak dilanjutkan" kini wajib: >=30 trade, PF >= 1.2, batas bawah WR >= 35%, >= 3 simbol, dan ekspektasi positif di kedua paruh periode (mengurangi risiko memilih plan yang kebetulan bagus).
 - Volume: EA ExnessBridge v1.11 mengirim tick volume sebagai elemen ke-6 tiap bar (server tetap menerima format lama 5 elemen). Selama EA lama, plan VOL-* memakai range candle sebagai pengganti volume (ditandai "pengganti (range)" di panel). Pasang ulang EA untuk volume asli.
 - File baru: `netlify/lib/labsig.js`. Logika H1, Control Tower, dan akun real tidak diubah.
+
+## Pembaruan v14s: Uji Trading God62 Baru (stop-and-reverse, simulasi)
+- Meniru trade strategy TradingView "God 62 PERSONAL" (ALMA 2, Sigma 5, Offset 0.85, 15 menit x 8, BOTH): selalu ada posisi; masuk di harga saat God 62 berbalik, keluar saat berbalik lagi. Tiga varian di M15 Lab: GOD62-BARU (tanpa SL, persis TradingView), GOD62-BARU+SL (SL keras 3 ATR), GOD62-BARU+TREN-H1 (hanya flip searah EMA20/50 H1).
+- 1R virtual = riskAtr x ATR(14) M15 (default 3), hanya agar bisa dibandingkan dengan plan lain. Dilaporkan juga % per trade (bruto), rata-rata menang/rugi, total %, hasil per simbol, posisi berjalan, dan daftar trade terakhir untuk dicocokkan dengan TradingView.
+- Masuk hanya pada pembalikan yang terlihat lab (tidak menebak posisi sebelum lab jalan). Flip yang terlewat karena data terputus >45 menit tidak dikejar.
+- Rumus God 62 di kode masih dugaan dari input indikator; cocokkan arah dan jam flip dengan Daftar trade TradingView.
