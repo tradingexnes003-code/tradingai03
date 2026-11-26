@@ -278,3 +278,25 @@ Sumber script tidak bisa dibuka; dasarnya INPUT dari screenshot (ALMA 2/5/0.85, 
 - 1R virtual = riskAtr x ATR(14) M15 (default 3), hanya agar bisa dibandingkan dengan plan lain. Dilaporkan juga % per trade (bruto), rata-rata menang/rugi, total %, hasil per simbol, posisi berjalan, dan daftar trade terakhir untuk dicocokkan dengan TradingView.
 - Masuk hanya pada pembalikan yang terlihat lab (tidak menebak posisi sebelum lab jalan). Flip yang terlewat karena data terputus >45 menit tidak dikejar.
 - Rumus God 62 di kode masih dugaan dari input indikator; cocokkan arah dan jam flip dengan Daftar trade TradingView.
+
+## Pembaruan v14t: 10 varian God62 Baru + proyeksi modal
+
+Tiga varian lama (GOD62-BARU, +SL, +TREN-H1) TIDAK diubah; perilakunya diuji identik dengan sebelumnya. Sepuluh varian baru, semuanya dengan SL keras (EA MT5 mewajibkan SL), 1R virtual = riskAtr x ATR(14) M15. Tiap varian menguji satu gagasan:
+
+| Varian | Gagasan |
+|---|---|
+| GOD62-BARU+SL2 | SL lebih rapat, 2 ATR |
+| GOD62-BARU+BE | geser SL ke impas setelah +1R |
+| GOD62-BARU+TRAIL | SL mengekor 1.5 ATR setelah +1R |
+| GOD62-BARU+TP3R | TP 3R atau berbalik, mana lebih dulu |
+| GOD62-BARU+TP1.5R | SL 2 ATR, TP 1.5R atau berbalik |
+| GOD62-BARU+KONFIRMASI | masuk bila arah bertahan 2 candle setelah flip |
+| GOD62-BARU+TREN-KUAT | lewati flip saat pasar sideways (efisiensi Kaufman 20 candle < 0.30) |
+| GOD62-BARU+SESI | hanya masuk jam data 07-20 |
+| GOD62-BARU+VOLUME | hanya flip dengan volume >= 1.3x rata-rata |
+| GOD62-BARU+KOMBO | konfirmasi 1 + non-sideways + sesi + SL 2.5 ATR + impas |
+
+- Panel baru **Proyeksi jika memakai modal Anda**: isi modal dan risiko % per trade; dashboard menampilkan profit (Rp), return, max drawdown, dan kurva modal tiap varian, diurutkan dari hasil terbaik. Dihitung dari R bersih (setelah biaya spread) dengan risiko tetap, digabung.
+- Tabel kelayakan: biaya SL (3 ATR, lot minimum) per simbol dibanding risiko per trade, supaya jelas simbol mana yang tidak muat di modal Anda.
+- Lab menyimpan ATR terakhir per simbol dan menampilkan spesifikasi lot dari EA.
+- Semua tetap simulasi (tidak ada order real). Penting: menguji banyak varian pada sinyal yang sama menaikkan risiko tampak bagus karena kebetulan; gunakan syarat >= 30 trade, >= 3 simbol, positif di kedua paruh periode.

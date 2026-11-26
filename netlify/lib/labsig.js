@@ -136,6 +136,28 @@ Object.assign(EXTRA, {
   g62tf: { ...flipBase, name: 'GOD62-BARU+TREN-H1', trendFilter: true, desc: 'Sama, tetapi hanya masuk bila arah flip searah tren EMA20/50 H1. Menguji apakah filter H1 membantu atau malah mengurangi hasil.' }
 });
 
+// ---- 10 varian God62 Baru tambahan. Semuanya memakai SL keras (EA MT5 mewajibkan SL), 1R virtual = riskAtr x ATR(14) M15.
+// Tiap varian menguji SATU gagasan yang berbeda; 3 varian lama di atas tidak diubah. Parameter baru bernilai nol/mati untuk varian lama.
+const NEWF = { ...flipBase, hardSl: true, riskAtr: 3, tpR: 0, beR: 0, trail: 0, trailAt: 1, confirmN: 0, erMin: 0, volX: 0 };
+Object.assign(EXTRA, {
+  g62s2: { ...NEWF, name: 'GOD62-BARU+SL2', riskAtr: 2, desc: 'SL keras lebih rapat: 2 ATR (1R = 2 ATR). Menguji apakah SL rapat memotong rugi tanpa terlalu sering tersapu. Keluar saat berbalik.' },
+  g62be: { ...NEWF, name: 'GOD62-BARU+BE', beR: 1, desc: 'SL 3 ATR; setelah untung +1R SL digeser ke harga masuk (impas). Keluar saat berbalik atau kena SL/impas.' },
+  g62tr: { ...NEWF, name: 'GOD62-BARU+TRAIL', trail: 1.5, trailAt: 1, desc: 'SL 3 ATR; setelah +1R SL mengekor 1.5 ATR di belakang harga. Mengunci sebagian untung bila harga balik sebelum God 62 berbalik.' },
+  g62t3: { ...NEWF, name: 'GOD62-BARU+TP3R', tpR: 3, desc: 'Gabungan: SL 3 ATR, TP tetap 3R. Keluar mana yang lebih dulu: TP, SL, atau God 62 berbalik.' },
+  g62t15: { ...NEWF, name: 'GOD62-BARU+TP1.5R', riskAtr: 2, tpR: 1.5, desc: 'Gabungan target dekat: SL 2 ATR, TP 1.5R. Keluar mana yang lebih dulu: TP, SL, atau God 62 berbalik.' },
+  g62c2: { ...NEWF, name: 'GOD62-BARU+KONFIRMASI', confirmN: 2, desc: 'Masuk hanya bila arah God 62 bertahan 2 candle setelah flip (masuk lebih telat, tetapi menyaring flip palsu). SL 3 ATR.' },
+  g62er: { ...NEWF, name: 'GOD62-BARU+TREN-KUAT', erMin: 0.3, desc: 'Lewati flip saat pasar sideways: efisiensi harga 20 candle M15 < 0.30. Menguji apakah menghindari pasar datar mengurangi rugi beruntun. SL 3 ATR.' },
+  g62ss: { ...NEWF, name: 'GOD62-BARU+SESI', sess: [7, 20], desc: 'Hanya masuk jam data 07-20 (London sampai New York, jam data broker). Posisi tetap dipegang sampai berbalik. SL 3 ATR.' },
+  g62vl: { ...NEWF, name: 'GOD62-BARU+VOLUME', volX: 1.3, desc: 'Hanya flip yang disertai volume >= 1.3x rata-rata 20 candle (tick volume bila EA mengirimnya, bila belum memakai range candle). SL 3 ATR.' },
+  g62k: { ...NEWF, name: 'GOD62-BARU+KOMBO', riskAtr: 2.5, beR: 1, confirmN: 1, erMin: 0.3, sess: [7, 20], desc: 'Gabungan penyaring: konfirmasi 1 candle + pasar tidak sideways + jam 07-20 + SL 2.5 ATR + impas di +1R. Trade paling sedikit; butuh waktu lebih lama untuk 30 trade.' }
+});
+// Rasio efisiensi Kaufman: 1 = bergerak lurus, mendekati 0 = bolak-balik (sideways).
+function effRatio(v, n = 20) {
+  if (v.length < n + 1) return 1;
+  const s = v.slice(-(n + 1)).map(x => x.c); let path = 0; for (let i = 1; i < s.length; i++) path += Math.abs(s[i] - s[i - 1]);
+  return path > 0 ? Math.abs(s[s.length - 1] - s[0]) / path : 0;
+}
+
 // Jaga SL tidak terlalu rapat (<0.8 ATR) atau terlalu lebar (>3 ATR). Mengembalikan SL yang disesuaikan atau null bila tidak layak.
 function guardSl(dir, entry, sl, A, pad = 0) {
   const buy = dir === 'BUY'; let s = buy ? sl - pad * A : sl + pad * A, risk = Math.abs(entry - s);
@@ -145,4 +167,4 @@ function guardSl(dir, entry, sl, A, pad = 0) {
   if (buy ? s >= entry : s <= entry) return null;
   return s;
 }
-module.exports = { SIGS, EXTRA, guardSl, htfDir, volRatio, impulse, retest };
+module.exports = { SIGS, EXTRA, guardSl, htfDir, volRatio, impulse, retest, effRatio };

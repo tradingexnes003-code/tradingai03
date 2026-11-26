@@ -4,7 +4,7 @@
 // - Semua hasil dalam satuan R (1R = jarak entry ke SL), sudah dikurangi biaya spread, supaya adil dibandingkan antar plan.
 const core = require('./core');
 const tower = require('./tower');
-const { SIGS, EXTRA, guardSl, htfDir } = require('./labsig');
+const { SIGS, EXTRA, guardSl, htfDir, volRatio, effRatio } = require('./labsig');
 
 const BAD = ['TERLEWAT', 'BATAL', 'PASAR SEPI'];
 const BAR_MIN = 15;
@@ -153,18 +153,40 @@ function stepFlip(st, id, P, cfg, sym, g, v, specs, asset, vh = []) {
   // 1) posisi terbuka: SL keras (bila ada), lalu keluar saat God 62 berbalik
   for (const p of st.open[id].filter(o => o.s === sym)) {
     let res = null, px = null; const b = sgn(p.dir), news = v.filter(c => c.t > p.lastT);
-    if (p.hard) { for (const c of news) { p.bars++; if (b > 0 ? c.l <= p.sl : c.h >= p.sl) { res = 'SL'; px = p.sl; break; } } } else p.bars += news.length;
+    if (p.hard) {
+      const risk = Math.abs(p.entry - p.sl0);
+      for (const c of news) {
+        p.bars++;
+        if (b > 0 ? c.l <= p.sl : c.h >= p.sl) { res = p.trl ? 'TRAIL' : (p.be && Math.abs(p.sl - p.entry) < 1e-9) ? 'BE' : 'SL'; px = p.sl; break; } // SL dulu bila SL dan TP di candle yang sama (konservatif)
+        if (p.tp != null && (b > 0 ? c.h >= p.tp : c.l <= p.tp)) { res = 'TP'; px = p.tp; break; }
+        const fav = b > 0 ? c.h - p.entry : p.entry - c.l;
+        if (P.beR > 0 && !p.be && fav >= P.beR * risk) { p.be = true; p.sl = p.entry; } // berlaku mulai candle berikutnya
+        if (P.trail > 0 && p.atr && fav >= (P.trailAt || 1) * risk) { const ns = b > 0 ? c.h - P.trail * p.atr : c.l + P.trail * p.atr; if (b > 0 ? ns > p.sl : ns < p.sl) { p.sl = ns; p.trl = true; } }
+      }
+    } else p.bars += news.length;
     p.lastT = lastT;
     if (!res && p.dir !== state) { res = 'FLIP'; px = price; }
     if (res) { const R = close(st, id, p, res, px, lastT, cfg.costR), t = st.trades[id][0]; ev(st, id, `${sym} ${p.dir} ditutup ${res} ${t.pct > 0 ? '+' : ''}${t.pct}% (${R > 0 ? '+' : ''}${R}R)`); }
   }
   // 2) masuk hanya pada pembalikan nyata yang terlihat oleh lab (bukan menebak posisi sebelum lab jalan)
-  if (!prev || prev === state || st.open[id].some(o => o.s === sym)) return;
+  // Varian dengan konfirmasi (confirmN > 0) masuk setelah arah bertahan N candle; varian lain masuk tepat saat flip (perilaku lama).
+  let entryNow;
+  if (P.confirmN > 0) {
+    st.flipRun = st.flipRun || {}; const r = st.flipRun[key], newN = seen ? Math.max(1, v.filter(c => c.t > seen).length) : 1;
+    if (!r) st.flipRun[key] = { s: state, n: 1, done: true }; // pertama kali melihat simbol ini: waktu flip tidak diketahui, jangan masuk
+    else if (r.s !== state) st.flipRun[key] = { s: state, n: 1, done: false };
+    else r.n += newN;
+    const q = st.flipRun[key]; entryNow = !q.done && q.n >= P.confirmN + 1; if (entryNow) q.done = true;
+  } else entryNow = !!prev && prev !== state;
+  if (!entryNow || st.open[id].some(o => o.s === sym)) return;
   if (gap > 45) { ev(st, id, `${sym} flip ${state} terlewat (data terakhir ${Math.round(gap)} menit lalu), menunggu flip berikutnya`); return; }
   if (P.trendFilter && htfDir(vh) !== state) { ev(st, id, `${sym} flip ${state} dilewati: tidak searah tren EMA H1`); return; }
-  const unit = P.riskAtr * A, buy = state === 'BUY', sl0 = +(buy ? price - unit : price + unit).toFixed(d);
-  st.open[id].push({ s: sym, a: asset, dir: state, entry: price, sl: P.hardSl ? sl0 : null, sl0, tp: null, tOpen: Date.now(), t0: lastT, lastT, bars: 0, cost: costOf(specs, sym, unit, cfg.costR), hOk: g.h.ok, mOk: g.m.ok, be: false, atr: A, hard: !!P.hardSl, sig: 'flip' });
-  ev(st, id, `${sym} FLIP → ${state} @${price}${P.hardSl ? ' SL ' + sl0 : ' (tanpa SL)'} (candle ${lastT})`);
+  if (P.sess && !inSess(P, lastT)) { ev(st, id, `${sym} flip ${state} dilewati: di luar sesi ${P.sess[0]}-${P.sess[1]}`); return; }
+  if (P.erMin > 0) { const er = effRatio(v, 20); if (er < P.erMin) { ev(st, id, `${sym} flip ${state} dilewati: pasar sideways (efisiensi ${er.toFixed(2)} < ${P.erMin})`); return; } }
+  if (P.volX > 0) { const k = (P.confirmN || 0) + 1; let mx = 0; for (let i = v.length - k; i < v.length; i++) if (i >= 0) mx = Math.max(mx, volRatio(v, i).r); if (mx < P.volX) { ev(st, id, `${sym} flip ${state} dilewati: volume ${mx.toFixed(2)}x < ${P.volX}x`); return; } }
+  const unit = P.riskAtr * A, buy = state === 'BUY', sl0 = +(buy ? price - unit : price + unit).toFixed(d), tp0 = P.hardSl && P.tpR > 0 ? +(buy ? price + P.tpR * unit : price - P.tpR * unit).toFixed(d) : null;
+  st.open[id].push({ s: sym, a: asset, dir: state, entry: price, sl: P.hardSl ? sl0 : null, sl0, tp: tp0, tOpen: Date.now(), t0: lastT, lastT, bars: 0, cost: costOf(specs, sym, unit, cfg.costR), hOk: g.h.ok, mOk: g.m.ok, be: false, atr: A, hard: !!P.hardSl, sig: 'flip' });
+  ev(st, id, `${sym} FLIP → ${state} @${price}${P.hardSl ? ' SL ' + sl0 : ' (tanpa SL)'}${tp0 != null ? ' TP ' + tp0 : ''} (candle ${lastT})`);
 }
 
 // ---------- statistik ----------
@@ -199,16 +221,19 @@ function baseline(tst, costR) {
   return { h1: by(x => (x.kind || 'H1') === 'H1'), m15: by(x => x.kind === 'M15' || x.kind === 'KONF') };
 }
 
-async function summary(store, tstore) {
+async function summary(store, tstore, mt5) {
   const cfg = await getCfg(store), st = await getState(store), tst = await tower.getState(tstore, await tower.getCfg(tstore)), b = baseline(tst, cfg.costR);
   const rows = [
     { id: 'base_h1', name: 'H1 plan (Control Tower, real-paper)', base: true, ...stats(b.h1) },
     { id: 'base_m15', name: 'M15 di Control Tower sekarang', base: true, ...stats(b.m15) }
   ];
   for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { riskAtr: P.riskAtr, hardSl: P.hardSl, trendFilter: P.trendFilter, entry: P.entry, sig: P.sig, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
+  // kurva R kumulatif (lama -> baru, maks 200 trade terakhir) untuk proyeksi modal di dashboard
+  for (const r of rows) if (r.params && r.params.entry === 'flip') { let c = 0; r.curve = [...(st.trades[r.id] || [])].reverse().map(t => +(c += t.R).toFixed(2)); }
+  const rep = mt5 ? ((await mt5.get('account_report', { type: 'json' }).catch(() => null)) || {}) : {}, specsOut = (rep.specs || []).map(x => ({ s: x.s, vmin: x.vmin, pu: x.pu, spr: x.spr }));
   const openPos = {}; for (const [id, P] of Object.entries(cfg.profiles)) if (P.entry === 'flip') openPos[id] = (st.open[id] || []).map(p => { const px = (st.last[p.s] || {}).price; return { s: p.s, dir: p.dir, entry: p.entry, since: p.t0, price: px != null ? px : null, pct: px ? +(sgn(p.dir) * (px - p.entry) / p.entry * 100).toFixed(2) : null }; });
   const pending = []; for (const [id, P] of Object.entries(cfg.profiles)) for (const q of (st.pend[id] || [])) { const px = (st.last[q.s] || {}).price; pending.push({ plan: P.name, s: q.s, dir: q.dir, entry: q.entry, sl: q.sl, tp: q.tp, bars: q.bars, price: px != null ? px : null, distPct: px ? +(Math.abs(px - q.entry) / px * 100).toFixed(2) : null }); }
-  return { cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, skip: st.skip || {}, pending, rows, log: st.log.slice(0, 30), openPos, recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 12)])) };
+  return { specs: specsOut, cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, skip: st.skip || {}, pending, rows, log: st.log.slice(0, 30), openPos, recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 12)])) };
 }
 
 // ---------- pemindaian ----------
@@ -239,7 +264,7 @@ async function runLab(store, tstore, mt5, manual, loader = defaultLoader) {
         if ((st.last[sym] || {}).t === lastT) continue; // belum ada candle M15 baru
         const g = core.god(vh, v, tcfg.rr, { h: tcfg.htf, l: tcfg.ltf, m15Min: 1 });
         for (const [id, P] of Object.entries(cfg.profiles)) { if (P.on) (P.entry === 'flip' ? stepFlip : stepProfile)(st, id, P, cfg, sym, g, v, specs, asset, vh); }
-        st.last[sym] = { t: lastT, status: g.status, hOk: g.h.ok, mOk: g.m.ok, price: v[v.length - 1].c, dir: g.dir, src: src || null, vol: v.slice(-21).every(x => x.vol > 0) ? 'tick' : 'proxy', at: Date.now() };
+        st.last[sym] = { t: lastT, status: g.status, hOk: g.h.ok, mOk: g.m.ok, price: v[v.length - 1].c, dir: g.dir, atr: +core.atr(v).toFixed(8), src: src || null, vol: v.slice(-21).every(x => x.vol > 0) ? 'tick' : 'proxy', at: Date.now() };
         if (st.skip) delete st.skip[sym];
       } catch (e) {
         if (e.skip) { st.skip = st.skip || {}; if (st.skip[sym] !== e.message) { st.skip[sym] = e.message; ev(st, 'SKIP', `${sym} ${e.message}`.slice(0, 140)); } }
