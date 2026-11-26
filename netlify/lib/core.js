@@ -18,7 +18,7 @@ async function eaBars(sym, iv) {
   if (!b || !b.length) return null;
   const age = (Date.now() - (d.u || 0)) / 60000;
   if (age > staleMin()) throw new Error(`Data EA ${name} basi (${Math.round(age)} menit). Pastikan MT5 menyala dan EA aktif`);
-  return b.map(x => ({ t: new Date(x[0] * 1000).toISOString().slice(0, 19).replace('T', ' '), o: x[1], h: x[2], l: x[3], c: x[4] }));
+  return b.map(x => ({ t: new Date(x[0] * 1000).toISOString().slice(0, 19).replace('T', ' '), o: x[1], h: x[2], l: x[3], c: x[4], ...(x.length > 5 ? { vol: x[5] } : {}) }));
 }
 // Mode auto: satu simbol memakai SATU sumber untuk semua timeframe (EA hanya jika segar dan lengkap), agar zona dan entry tidak bercampur dua feed harga.
 async function pickSource(sym, ivs) {
@@ -57,8 +57,9 @@ async function ingest(store, body) {
     const cur = (await store.get('px_' + name, { type: 'json' }).catch(() => null)) || { tf: {} };
     for (const [tf, bars] of Object.entries(it.tf || {})) {
       if (!['M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'D1'].includes(tf) || !Array.isArray(bars)) continue;
+      // Bar = [waktu, o, h, l, c] atau dengan elemen ke-6 opsional (tick volume dari EA baru).
       const m = new Map((cur.tf[tf] || []).map(x => [x[0], x]));
-      bars.forEach(x => { if (Array.isArray(x) && x.length === 5 && x.every(Number.isFinite)) m.set(x[0], x); });
+      bars.forEach(x => { if (Array.isArray(x) && (x.length === 5 || x.length === 6) && x.every(Number.isFinite)) m.set(x[0], x); });
       cur.tf[tf] = [...m.values()].sort((a, c) => a[0] - c[0]).slice(-300);
     }
     // q = timestamp tick broker (Unix seconds); hanya update jika benar-benar ada tick.

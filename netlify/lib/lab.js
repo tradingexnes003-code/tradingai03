@@ -4,6 +4,7 @@
 // - Semua hasil dalam satuan R (1R = jarak entry ke SL), sudah dikurangi biaya spread, supaya adil dibandingkan antar plan.
 const core = require('./core');
 const tower = require('./tower');
+const { SIGS, EXTRA, guardSl } = require('./labsig');
 
 const BAD = ['TERLEWAT', 'BATAL', 'PASAR SEPI'];
 const BAR_MIN = 15;
@@ -14,6 +15,7 @@ const PROFILES = {
   zona: { name: 'M15-ZONA', desc: 'LIMIT di tepi zona H1, hanya terisi jika candle M15 menolak zona (tutup kembali searah), sesi aktif, TP 2R + BE.', on: true, entry: 'limit', hMin: 6, mMin: 0, exit: 'tp', tpR: 2, beR: 1, room: true, sess: [7, 20], cool: 8, reject: true, maxOpen: 3 },
   selektif: { name: 'M15-SELEKTIF', desc: 'Market hanya jika M15 7/7, H1 7/8, ada ruang ke target H1, sesi aktif, jeda setelah rugi. Sedikit trade, kualitas tinggi.', on: true, entry: 'market', hMin: 7, mMin: 7, exit: 'tp', tpR: 2, beR: 1, room: true, sess: [7, 20], cool: 8, reject: false, maxOpen: 3 }
 };
+Object.assign(PROFILES, EXTRA);
 const DEF = { enabled: true, costR: 0.1, onlyExness: true, profiles: {} };
 const fresh = () => ({ open: {}, pend: {}, trades: {}, elig: {}, until: {}, used: {}, skip: {}, last: {}, log: [], since: Date.now(), lastRun: null });
 
@@ -39,24 +41,28 @@ function costOf(specs, sym, risk, costR) {
 
 function close(st, id, p, res, px, lastT, costR) {
   const risk = Math.abs(p.entry - p.sl0) || 1e-9, gross = sgn(p.dir) * (px - p.entry) / risk, R = +(gross - p.cost).toFixed(2);
-  (st.trades[id] = st.trades[id] || []).unshift({ s: p.s, dir: p.dir, entry: p.entry, sl: p.sl0, tp: p.tp, res, exit: px, R, cost: p.cost, tOpen: p.tOpen, tClose: Date.now(), bar: p.t0, hour: hourOf(p.t0), hOk: p.hOk, mOk: p.mOk, be: !!p.be });
-  if (st.trades[id].length > 300) st.trades[id].length = 300;
+  (st.trades[id] = st.trades[id] || []).unshift({ s: p.s, dir: p.dir, entry: p.entry, sl: p.sl0, tp: p.tp, res, exit: px, R, cost: p.cost, tOpen: p.tOpen, tClose: Date.now(), bar: p.t0, hour: hourOf(p.t0), hOk: p.hOk, mOk: p.mOk, be: !!p.be, trl: !!p.trl, sig: p.sig || null });
+  if (st.trades[id].length > 200) st.trades[id].length = 200;
   st.open[id] = (st.open[id] || []).filter(x => x !== p);
   return R;
 }
 
 // Satu langkah untuk satu profil dan satu simbol. g = hasil core.god (dihitung sekali dengan m15Min=1), v = candle M15 tertutup.
-function stepProfile(st, id, P, cfg, sym, g, v, specs, asset) {
-  const lastT = v[v.length - 1].t, price = v[v.length - 1].c, key = id + '|' + sym;
+function stepProfile(st, id, P, cfg, sym, g, v, specs, asset, vh = []) {
+  const lastT = v[v.length - 1].t, price = v[v.length - 1].c, key = id + '|' + sym, A = core.atr(v);
   st.open[id] = st.open[id] || []; st.pend[id] = st.pend[id] || []; st.used = st.used || {}; st.elig = st.elig || {}; st.until = st.until || {};
   // 1) posisi terbuka: SL dulu bila SL dan TP tersentuh di candle yang sama (konservatif)
   for (const p of st.open[id].filter(x => x.s === sym)) {
     let res = null, px = null; const risk = Math.abs(p.entry - p.sl0), b = sgn(p.dir);
     for (const x of v.filter(c => c.t > p.lastT)) {
       p.bars++;
-      if (b > 0 ? x.l <= p.sl : x.h >= p.sl) { res = p.be && Math.abs(p.sl - p.entry) < 1e-9 ? 'BE' : 'SL'; px = p.sl; break; }
-      if (P.exit === 'tp' && (b > 0 ? x.h >= p.tp : x.l <= p.tp)) { res = 'TP'; px = p.tp; break; }
+      if (b > 0 ? x.l <= p.sl : x.h >= p.sl) { res = p.trl ? 'TRAIL' : p.be && Math.abs(p.sl - p.entry) < 1e-9 ? 'BE' : 'SL'; px = p.sl; break; }
+      if (P.exit === 'tp' && p.tp != null && (b > 0 ? x.h >= p.tp : x.l <= p.tp)) { res = 'TP'; px = p.tp; break; }
       if (P.beR > 0 && !p.be && (b > 0 ? x.h - p.entry : p.entry - x.l) >= P.beR * risk) { p.be = true; p.sl = p.entry; } // berlaku mulai candle berikutnya
+      if (P.trail > 0 && p.atr) { // SL mengekor: mulai setelah untung >= trailAt R, mengikuti ekstrem candle, berlaku mulai candle berikutnya
+        const fav = b > 0 ? x.h - p.entry : p.entry - x.l;
+        if (fav >= (P.trailAt || 1) * risk) { const ns = b > 0 ? x.h - P.trail * p.atr : x.l + P.trail * p.atr; if (b > 0 ? ns > p.sl : ns < p.sl) { p.sl = ns; p.trl = true; } }
+      }
     }
     p.lastT = lastT;
     if (!res && P.exit === 'g62' && g.g62 && g.g62.state && (p.dir === 'BUY') !== (g.g62.state === 'BUY')) { res = 'G62'; px = price; }
@@ -73,17 +79,17 @@ function stepProfile(st, id, P, cfg, sym, g, v, specs, asset) {
     for (const x of v.filter(c => c.t > q.lastT)) {
       q.bars++;
       if (b > 0 ? x.l <= q.sl : x.h >= q.sl) { why = 'zona jebol sebelum terisi'; break; }
-      if (b > 0 ? x.h >= q.tp : x.l <= q.tp) { why = 'target tercapai sebelum terisi'; break; }
+      if (q.tp != null && (b > 0 ? x.h >= q.tp : x.l <= q.tp)) { why = 'target tercapai sebelum terisi'; break; }
       const touch = b > 0 ? x.l <= q.entry : x.h >= q.entry;
       if (touch && inSess(P, x.t)) {
         const rej = b > 0 ? x.c > q.entry : x.c < q.entry; // candle menolak zona: tutup kembali searah
         if (!P.reject || rej) { fill = x; break; }
       }
     }
-    if (!fill && !why && q.bars >= 64) why = 'kedaluwarsa (16 jam)';
+    if (!fill && !why && q.bars >= (q.exp || 64)) why = 'kedaluwarsa (' + (q.exp || 64) + ' candle)';
     if (fill) {
       const cost = costOf(specs, sym, Math.abs(q.entry - q.sl), cfg.costR);
-      const p = { s: sym, a: asset, dir: q.dir, entry: q.entry, sl: q.sl, sl0: q.sl, tp: q.tp, rr: q.rr, tOpen: Date.now(), t0: fill.t, lastT: fill.t, bars: 0, cost, hOk: q.hOk, mOk: q.mOk, be: false };
+      const p = { s: sym, a: asset, dir: q.dir, entry: q.entry, sl: q.sl, sl0: q.sl, tp: q.tp, rr: q.rr, tOpen: Date.now(), t0: fill.t, lastT: fill.t, bars: 0, cost, hOk: q.hOk, mOk: q.mOk, be: false, atr: A, sig: q.sig || null };
       st.pend[id] = st.pend[id].filter(x => x !== q); st.open[id].push(p);
       // candle pengisi: bila SL ikut tersentuh di candle yang sama, hitung rugi (konservatif)
       if (b > 0 ? fill.l <= p.sl : fill.h >= p.sl) { close(st, id, p, 'SL', p.sl, lastT, cfg.costR); if (P.cool > 0) st.until[key] = { bars: P.cool, from: lastT, n: 0 }; ev(st, id, `${sym} ${p.dir} terisi lalu SL di candle yang sama -1R`); }
@@ -107,6 +113,20 @@ function stepProfile(st, id, P, cfg, sym, g, v, specs, asset) {
       st.pend[id].push({ s: sym, dir: g.dir, entry: pl.entry, sl: pl.sl, tp: +tp.toFixed(price > 100 ? 2 : 5), rr: pl.rr, planKey, lastT, bars: 0, hOk: g.h.ok, mOk: g.m.ok });
       ev(st, id, `${sym} ${g.dir} LIMIT dipasang @${pl.entry} SL ${pl.sl} TP ${P.tpR}R`);
     }
+  } else if (P.entry === 'sig') {
+    const S = SIGS[P.sig];
+    if (S && g.h.ok >= P.hMin && inSess(P, lastT) && !has && !coolOn && total < P.maxOpen) {
+      let sg = null; try { sg = S({ v, vh, g, P, A, price, lastT }); } catch (e) { sg = null; st.sigErr = st.sigErr || {}; if (st.sigErr[id] !== e.message) { st.sigErr[id] = e.message; ev(st, 'ERR', `sinyal ${P.sig}: ${String(e.message).slice(0, 80)}`); } }
+      if (sg && sg.tag !== st.used[key]) {
+        const buy = sg.dir === 'BUY', en = sg.entry, sl = guardSl(sg.dir, en, sg.sl, A, sg._atrPad || 0);
+        if (sl != null) {
+          const risk = Math.abs(en - sl), d = price > 1000 ? 2 : price > 100 ? 3 : 5, tp = P.exit === 'tp' ? +(buy ? en + P.tpR * risk : en - P.tpR * risk).toFixed(d) : null;
+          st.used[key] = sg.tag;
+          if (sg.mode === 'limit') { st.pend[id].push({ s: sym, dir: sg.dir, entry: +en.toFixed(d), sl: +sl.toFixed(d), tp, rr: P.tpR, planKey: sg.tag, sig: P.sig, lastT, bars: 0, exp: sg.expire || 8, hOk: g.h.ok, mOk: g.m.ok }); ev(st, id, `${sym} ${sg.dir} LIMIT sinyal ${P.sig} @${en.toFixed(d)} SL ${sl.toFixed(d)}`); }
+          else { st.open[id].push({ s: sym, a: asset, dir: sg.dir, entry: +en.toFixed(d), sl: +sl.toFixed(d), sl0: +sl.toFixed(d), tp, rr: P.tpR, tOpen: Date.now(), t0: lastT, lastT, bars: 0, cost: costOf(specs, sym, risk, cfg.costR), hOk: g.h.ok, mOk: g.m.ok, be: false, atr: A, sig: P.sig }); ev(st, id, `${sym} ${sg.dir} masuk sinyal ${P.sig} @${en.toFixed(d)} SL ${sl.toFixed(d)}${tp ? ' TP ' + tp : ' (SL mengekor)'}`); }
+        }
+      }
+    }
   } else {
     const ok = hOk && g.m.ok >= P.mMin && g.m.entry != null && inSess(P, lastT) && (!P.room || g.m.tpBasis === 'struktur H1');
     const edge = ok && !st.elig[key];
@@ -115,7 +135,7 @@ function stepProfile(st, id, P, cfg, sym, g, v, specs, asset) {
       const buy = g.dir === 'BUY', en = g.m.entry, sl = g.m.sl, risk = Math.abs(en - sl);
       if (risk > 0) {
         const tp = P.exit === 'tp' ? +(buy ? en + P.tpR * risk : en - P.tpR * risk).toFixed(price > 100 ? 2 : 5) : null;
-        const p = { s: sym, a: asset, dir: g.dir, entry: en, sl, sl0: sl, tp, rr: g.m.rr, tOpen: Date.now(), t0: lastT, lastT, bars: 0, cost: costOf(specs, sym, risk, cfg.costR), hOk: g.h.ok, mOk: g.m.ok, be: false };
+        const p = { s: sym, a: asset, dir: g.dir, entry: en, sl, sl0: sl, tp, rr: g.m.rr, tOpen: Date.now(), t0: lastT, lastT, bars: 0, cost: costOf(specs, sym, risk, cfg.costR), hOk: g.h.ok, mOk: g.m.ok, be: false, atr: A };
         st.open[id].push(p); st.used[key] = planKey;
         ev(st, id, `${sym} ${g.dir} market @${en} SL ${sl}${tp ? ' TP ' + tp : ' keluar saat God 62 berbalik'} (H1 ${g.h.ok}/8, M15 ${g.m.ok}/7)`);
       }
@@ -134,12 +154,15 @@ function stats(tr, minN = 30) {
   const SES = { asia: [0, 7], london: [7, 13], ny: [13, 20], malam: [20, 24] }, ses = {};
   for (const [k, [a, b]] of Object.entries(SES)) { const q = tr.filter(x => x.hour != null && x.hour >= a && x.hour < b); if (q.length) ses[k] = { n: q.length, wr: Math.round(q.filter(x => x.R > 0).length / q.length * 100), R: +q.reduce((s, x) => s + x.R, 0).toFixed(1) }; }
   const r20 = tr.slice(0, 20), wr20 = r20.length ? Math.round(r20.filter(x => x.R > 0).length / r20.length * 100) : null;
+  const sy = new Set(tr.map(x => x.s)).size, mean = a => (a.length ? a.reduce((s, x) => s + x.R, 0) / a.length : 0), hf = Math.floor(n / 2), expNew = mean(tr.slice(0, hf)), expOld = mean(tr.slice(hf));
   let verdict;
   if (n < minN) verdict = `data kurang (${n}/${minN})`;
-  else if (exp > 0 && pf >= 1.2 && lo >= 0.35) verdict = 'layak dilanjutkan';
-  else if (exp > 0) verdict = 'positif tipis, awasi';
-  else verdict = 'belum layak';
-  return { n, w, l, wr: Math.round(w / n * 100), wrLow: Math.round(lo * 100), exp: +exp.toFixed(2), pf: +pf.toFixed(2), dd: +dd.toFixed(1), tot: +tot.toFixed(1), res, ses, wr20, verdict };
+  else if (exp > 0) {
+    // Dengan banyak plan diuji bersamaan, ada yang tampak bagus hanya karena kebetulan. Karena itu 'layak' wajib: PF, batas bawah WR, minimal 3 simbol, dan positif di kedua paruh periode.
+    const why = []; if (pf < 1.2) why.push('PF rendah'); if (lo < 0.35) why.push('WR belum meyakinkan'); if (sy < 3) why.push(`baru ${sy} simbol`); if (!(expNew > 0 && expOld > 0)) why.push('tidak konsisten antar-paruh');
+    verdict = why.length ? 'positif, belum teruji: ' + why.join(', ') : 'layak dilanjutkan';
+  } else verdict = 'belum layak';
+  return { n, w, l, wr: Math.round(w / n * 100), wrLow: Math.round(lo * 100), exp: +exp.toFixed(2), pf: +pf.toFixed(2), dd: +dd.toFixed(1), tot: +tot.toFixed(1), res, ses, wr20, sy, verdict };
 }
 
 // Baseline dari Control Tower (hanya dibaca): H1 plan dan M15 yang sedang berjalan, R dikurangi biaya yang sama.
@@ -155,7 +178,7 @@ async function summary(store, tstore) {
     { id: 'base_h1', name: 'H1 plan (Control Tower, real-paper)', base: true, ...stats(b.h1) },
     { id: 'base_m15', name: 'M15 di Control Tower sekarang', base: true, ...stats(b.m15) }
   ];
-  for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { entry: P.entry, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
+  for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { entry: P.entry, sig: P.sig, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
   const pending = []; for (const [id, P] of Object.entries(cfg.profiles)) for (const q of (st.pend[id] || [])) { const px = (st.last[q.s] || {}).price; pending.push({ plan: P.name, s: q.s, dir: q.dir, entry: q.entry, sl: q.sl, tp: q.tp, bars: q.bars, price: px != null ? px : null, distPct: px ? +(Math.abs(px - q.entry) / px * 100).toFixed(2) : null }); }
   return { cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, skip: st.skip || {}, pending, rows, log: st.log.slice(0, 30), recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 8)])) };
 }
@@ -187,8 +210,8 @@ async function runLab(store, tstore, mt5, manual, loader = defaultLoader) {
         const { v, vh, src } = await loader(tstore, sym, tcfg, cfg), lastT = v[v.length - 1].t;
         if ((st.last[sym] || {}).t === lastT) continue; // belum ada candle M15 baru
         const g = core.god(vh, v, tcfg.rr, { h: tcfg.htf, l: tcfg.ltf, m15Min: 1 });
-        for (const [id, P] of Object.entries(cfg.profiles)) { if (P.on) stepProfile(st, id, P, cfg, sym, g, v, specs, asset); }
-        st.last[sym] = { t: lastT, status: g.status, hOk: g.h.ok, mOk: g.m.ok, price: v[v.length - 1].c, dir: g.dir, src: src || null, at: Date.now() };
+        for (const [id, P] of Object.entries(cfg.profiles)) { if (P.on) stepProfile(st, id, P, cfg, sym, g, v, specs, asset, vh); }
+        st.last[sym] = { t: lastT, status: g.status, hOk: g.h.ok, mOk: g.m.ok, price: v[v.length - 1].c, dir: g.dir, src: src || null, vol: v.slice(-21).every(x => x.vol > 0) ? 'tick' : 'proxy', at: Date.now() };
         if (st.skip) delete st.skip[sym];
       } catch (e) {
         if (e.skip) { st.skip = st.skip || {}; if (st.skip[sym] !== e.message) { st.skip[sym] = e.message; ev(st, 'SKIP', `${sym} ${e.message}`.slice(0, 140)); } }
@@ -210,7 +233,10 @@ async function setConfig(store, body) {
   for (const [id, x] of Object.entries(body.profiles || {})) {
     if (!PROFILES[id] || !x || typeof x !== 'object') continue; const p = nx.profiles[id] = { ...(nx.profiles[id] || {}) };
     if (typeof x.on === 'boolean') p.on = x.on;
-    if (['market', 'limit'].includes(x.entry)) p.entry = x.entry;
+    if (['market', 'limit'].includes(x.entry) && PROFILES[id].entry !== 'sig') p.entry = x.entry;
+    if (isFinite(x.volX)) p.volX = clamp(x.volX, 1.1, 5);
+    if (isFinite(x.trail)) p.trail = clamp(x.trail, 0, 5);
+    if (isFinite(x.trailAt)) p.trailAt = clamp(x.trailAt, 0, 3);
     if (['g62', 'tp'].includes(x.exit)) p.exit = x.exit;
     if (isFinite(x.hMin)) p.hMin = Math.round(clamp(x.hMin, 3, 8));
     if (isFinite(x.mMin)) p.mMin = Math.round(clamp(x.mMin, 0, 7));

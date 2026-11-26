@@ -266,3 +266,9 @@ Sumber script tidak bisa dibuka; dasarnya INPUT dari screenshot (ALMA 2/5/0.85, 
 - Bug: lab tidak mengarahkan `core` ke penyimpanan data EA, sehingga `pickSource` selalu memilih Twelve Data (terutama pada tombol "Jalankan lab sekarang", yang berjalan di fungsi terpisah). Diperbaiki dengan `core.setStore(tstore)` di `runLab`.
 - Opsi baru "hanya data Exness" (default aktif): simbol yang data Exness-nya belum segar DILEWATI dengan alasan di panel, tidak jatuh ke Twelve Data. Mencegah campuran dua feed harga dan pemakaian kuota Twelve Data oleh lab.
 - Setelah deploy, tekan "Reset lab" sekali: pembatalan plan yang terjadi saat lab memakai feed Twelve Data tidak mewakili data Exness.
+
+## Pembaruan v14r: 10 plan M15 tambahan di M15 Lab (hanya simulasi)
+- Total 14 plan di lab. Baru: RETEST (break level swing M15 lalu retest), RETEST-H1 (level swing H1), PINBAR-SR (penolakan di support/resistance), VOL-IKUT (ikut candle volume besar), VOL-RETEST (LIMIT di 50% candle impuls), VOL-ZONA (volume besar di zona H1), EMA-PULLBACK dan BREAKOUT20 (arah dari EMA H1, tanpa God 62), ASIS-TP1.5, ASIS-TRAIL (SL mengekor).
+- Status "layak dilanjutkan" kini wajib: >=30 trade, PF >= 1.2, batas bawah WR >= 35%, >= 3 simbol, dan ekspektasi positif di kedua paruh periode (mengurangi risiko memilih plan yang kebetulan bagus).
+- Volume: EA ExnessBridge v1.11 mengirim tick volume sebagai elemen ke-6 tiap bar (server tetap menerima format lama 5 elemen). Selama EA lama, plan VOL-* memakai range candle sebagai pengganti volume (ditandai "pengganti (range)" di panel). Pasang ulang EA untuk volume asli.
+- File baru: `netlify/lib/labsig.js`. Logika H1, Control Tower, dan akun real tidak diubah.

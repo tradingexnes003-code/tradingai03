@@ -5,7 +5,7 @@
 //| order apa pun.                                                    |
 //+------------------------------------------------------------------+
 #property copyright "Trading AI Monitor"
-#property version   "1.10"
+#property version   "1.11"
 
 input string ServerUrl     = "https://NAMA-SITUS-ANDA.netlify.app/.netlify/functions/ingest";
 input string EaKey         = "ISI_DENGAN_EA_KEY";
@@ -108,7 +108,7 @@ void OnTimer()
          {
             if(k > 0) arr += ",";
             arr += "[" + (string)(long)r[k].time + "," + DoubleToString(r[k].open, dg) + "," + DoubleToString(r[k].high, dg) + ","
-                   + DoubleToString(r[k].low, dg) + "," + DoubleToString(r[k].close, dg) + "]";
+                   + DoubleToString(r[k].low, dg) + "," + DoubleToString(r[k].close, dg) + "," + (string)(long)r[k].tick_volume + "]";
          }
          if(part != "") part += ",";
          part += "\"" + g_tf[j] + "\":[" + arr + "]";
