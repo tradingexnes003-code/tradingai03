@@ -41,7 +41,7 @@ function costOf(specs, sym, risk, costR) {
 
 function close(st, id, p, res, px, lastT, costR) {
   const risk = Math.abs(p.entry - p.sl0) || 1e-9, gross = sgn(p.dir) * (px - p.entry) / risk, R = +(gross - p.cost).toFixed(2), pct = +(sgn(p.dir) * (px - p.entry) / p.entry * 100).toFixed(3);
-  (st.trades[id] = st.trades[id] || []).unshift({ s: p.s, dir: p.dir, entry: p.entry, sl: p.sl0, tp: p.tp, res, exit: px, R, cost: p.cost, tOpen: p.tOpen, tClose: Date.now(), bar: p.t0, hour: hourOf(p.t0), hOk: p.hOk, mOk: p.mOk, be: !!p.be, trl: !!p.trl, sig: p.sig || null, pct, tb: lastT });
+  (st.trades[id] = st.trades[id] || []).unshift({ s: p.s, dir: p.dir, entry: p.entry, sl: p.sl0, tp: p.tp, res, exit: px, R, cost: p.cost, tOpen: p.tOpen, tClose: Date.now(), bar: p.t0, hour: hourOf(p.t0), hOk: p.hOk, mOk: p.mOk, be: !!p.be, trl: !!p.trl, sig: p.sig || null, pct, tb: lastT, mfe: p.mfe != null ? +(p.mfe / risk).toFixed(2) : undefined, mae: p.mae != null ? +(p.mae / risk).toFixed(2) : undefined });
   if (st.trades[id].length > 200) st.trades[id].length = 200;
   st.open[id] = (st.open[id] || []).filter(x => x !== p);
   return R;
@@ -157,13 +157,15 @@ function stepFlip(st, id, P, cfg, sym, g, v, specs, asset, vh = []) {
       const risk = Math.abs(p.entry - p.sl0);
       for (const c of news) {
         p.bars++;
+        p.mae = Math.max(p.mae || 0, b > 0 ? p.entry - c.l : c.h - p.entry); // penurunan terbesar terhadap harga masuk (harga)
         if (b > 0 ? c.l <= p.sl : c.h >= p.sl) { res = p.trl ? 'TRAIL' : (p.be && Math.abs(p.sl - p.entry) < 1e-9) ? 'BE' : 'SL'; px = p.sl; break; } // SL dulu bila SL dan TP di candle yang sama (konservatif)
-        if (p.tp != null && (b > 0 ? c.h >= p.tp : c.l <= p.tp)) { res = 'TP'; px = p.tp; break; }
+        if (p.tp != null && (b > 0 ? c.h >= p.tp : c.l <= p.tp)) { res = 'TP'; px = p.tp; p.mfe = Math.max(p.mfe || 0, Math.abs(p.tp - p.entry)); break; }
         const fav = b > 0 ? c.h - p.entry : p.entry - c.l;
+        p.mfe = Math.max(p.mfe || 0, fav);
         if (P.beR > 0 && !p.be && fav >= P.beR * risk) { p.be = true; p.sl = p.entry; } // berlaku mulai candle berikutnya
         if (P.trail > 0 && p.atr && fav >= (P.trailAt || 1) * risk) { const ns = b > 0 ? c.h - P.trail * p.atr : c.l + P.trail * p.atr; if (b > 0 ? ns > p.sl : ns < p.sl) { p.sl = ns; p.trl = true; } }
       }
-    } else p.bars += news.length;
+    } else { p.bars += news.length; for (const c of news) { p.mae = Math.max(p.mae || 0, b > 0 ? p.entry - c.l : c.h - p.entry); p.mfe = Math.max(p.mfe || 0, b > 0 ? c.h - p.entry : p.entry - c.l); } }
     p.lastT = lastT;
     if (!res && p.dir !== state) { res = 'FLIP'; px = price; }
     if (res) { const R = close(st, id, p, res, px, lastT, cfg.costR), t = st.trades[id][0]; ev(st, id, `${sym} ${p.dir} ditutup ${res} ${t.pct > 0 ? '+' : ''}${t.pct}% (${R > 0 ? '+' : ''}${R}R)`); }
@@ -211,7 +213,15 @@ function stats(tr, minN = 30) {
     const why = []; if (pf < 1.2) why.push('PF rendah'); if (lo < 0.35) why.push('WR belum meyakinkan'); if (sy < 3) why.push(`baru ${sy} simbol`); if (!(expNew > 0 && expOld > 0)) why.push('tidak konsisten antar-paruh');
     verdict = why.length ? 'positif, belum teruji: ' + why.join(', ') : 'layak dilanjutkan';
   } else verdict = 'belum layak';
-  return { n, w, l, wr: Math.round(w / n * 100), wrLow: Math.round(lo * 100), exp: +exp.toFixed(2), pf: +pf.toFixed(2), dd: +dd.toFixed(1), tot: +tot.toFixed(1), res, ses, wr20, sy, avgPct, avgWinPct, avgLossPct, totPct, bySym, verdict };
+  // Peluang edge nyata: bootstrap deterministik atas R tiap trade. pPos = % resampling dengan rata-rata R > 0; ci = rentang 95% rata-rata R.
+  let pPos = null, ciLo = null, ciHi = null;
+  if (n >= 5) {
+    const rs = tr.map(x => x.R); let sd = ((n * 2654435761) ^ Math.round(tot * 1000)) >>> 0; const rnd = () => (sd = (sd * 1664525 + 1013904223) >>> 0) / 4294967296, B = 400, ms = []; let ps = 0;
+    for (let b = 0; b < B; b++) { let s = 0; for (let i = 0; i < n; i++) s += rs[Math.floor(rnd() * n)]; ms.push(s / n); if (s > 0) ps++; }
+    ms.sort((a, c) => a - c); pPos = Math.round(ps / B * 100); ciLo = +ms[Math.floor(0.025 * B)].toFixed(2); ciHi = +ms[Math.floor(0.975 * B)].toFixed(2);
+  }
+  const mfeA = tr.filter(x => x.mfe != null), avgMfe = mfeA.length ? +(mfeA.reduce((s, x) => s + x.mfe, 0) / mfeA.length).toFixed(2) : null;
+  return { pPos, ciLo, ciHi, avgMfe, n, w, l, wr: Math.round(w / n * 100), wrLow: Math.round(lo * 100), exp: +exp.toFixed(2), pf: +pf.toFixed(2), dd: +dd.toFixed(1), tot: +tot.toFixed(1), res, ses, wr20, sy, avgPct, avgWinPct, avgLossPct, totPct, bySym, verdict };
 }
 
 // Baseline dari Control Tower (hanya dibaca): H1 plan dan M15 yang sedang berjalan, R dikurangi biaya yang sama.
@@ -227,13 +237,14 @@ async function summary(store, tstore, mt5) {
     { id: 'base_h1', name: 'H1 plan (Control Tower, real-paper)', base: true, ...stats(b.h1) },
     { id: 'base_m15', name: 'M15 di Control Tower sekarang', base: true, ...stats(b.m15) }
   ];
-  for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { riskAtr: P.riskAtr, hardSl: P.hardSl, trendFilter: P.trendFilter, entry: P.entry, sig: P.sig, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
+  for (const [id, P] of Object.entries(cfg.profiles)) rows.push({ id, name: P.name, desc: P.desc, on: P.on, params: { fam: P.fam, trail: P.trail, trailAt: P.trailAt, riskAtr: P.riskAtr, hardSl: P.hardSl, trendFilter: P.trendFilter, entry: P.entry, sig: P.sig, hMin: P.hMin, mMin: P.mMin, exit: P.exit, tpR: P.tpR, beR: P.beR, room: P.room, sess: P.sess, cool: P.cool, reject: P.reject }, open: (st.open[id] || []).length, pend: (st.pend[id] || []).length, ...stats(st.trades[id] || []) });
   // kurva R kumulatif (lama -> baru, maks 200 trade terakhir) untuk proyeksi modal di dashboard
+  for (const r of rows) if (r.params && r.params.entry === 'flip') { const f = (st.trades[r.id] || []).filter(t => t.tOpen >= (st.fwd || Infinity)); r.fwd = { n: f.length, tot: +f.reduce((a, b) => a + b.R, 0).toFixed(2), wr: f.length ? Math.round(f.filter(x => x.R > 0).length / f.length * 100) : null }; }
   for (const r of rows) if (r.params && r.params.entry === 'flip') { let c = 0; r.curve = [...(st.trades[r.id] || [])].reverse().map(t => +(c += t.R).toFixed(2)); }
   const rep = mt5 ? ((await mt5.get('account_report', { type: 'json' }).catch(() => null)) || {}) : {}, specsOut = (rep.specs || []).map(x => ({ s: x.s, vmin: x.vmin, pu: x.pu, spr: x.spr }));
   const openPos = {}; for (const [id, P] of Object.entries(cfg.profiles)) if (P.entry === 'flip') openPos[id] = (st.open[id] || []).map(p => { const px = (st.last[p.s] || {}).price; return { s: p.s, dir: p.dir, entry: p.entry, since: p.t0, price: px != null ? px : null, pct: px ? +(sgn(p.dir) * (px - p.entry) / p.entry * 100).toFixed(2) : null }; });
   const pending = []; for (const [id, P] of Object.entries(cfg.profiles)) for (const q of (st.pend[id] || [])) { const px = (st.last[q.s] || {}).price; pending.push({ plan: P.name, s: q.s, dir: q.dir, entry: q.entry, sl: q.sl, tp: q.tp, bars: q.bars, price: px != null ? px : null, distPct: px ? +(Math.abs(px - q.entry) / px * 100).toFixed(2) : null }); }
-  return { specs: specsOut, cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, skip: st.skip || {}, pending, rows, log: st.log.slice(0, 30), openPos, recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 12)])) };
+  return { fwd: st.fwd || null, specs: specsOut, cfg, since: st.since, lastRun: st.lastRun, symbols: st.last, skip: st.skip || {}, pending, rows, log: st.log.slice(0, 30), openPos, recent: Object.fromEntries(Object.keys(cfg.profiles).map(id => [id, (st.trades[id] || []).slice(0, 12)])) };
 }
 
 // ---------- pemindaian ----------
@@ -254,7 +265,8 @@ async function runLab(store, tstore, mt5, manual, loader = defaultLoader) {
     const cfg = await getCfg(store), tcfg = await tower.getCfg(tstore);
     if (!cfg.enabled || (!tcfg.enabled && !manual)) return { skipped: 'nonaktif' };
     core.setStore(tstore); // arahkan core ke penyimpanan data EA (px_*); tanpa ini pickSource selalu memilih Twelve Data
-    const st = await getState(store), specs = mt5 ? ((await mt5.get('account_report', { type: 'json' }).catch(() => null)) || {}).specs : null;
+    const st = await getState(store); if (!st.fwd) st.fwd = Date.now(); // penanda awal uji maju bersih (varian baru dipilih setelah melihat data sebelum ini)
+    const specs = mt5 ? ((await mt5.get('account_report', { type: 'json' }).catch(() => null)) || {}).specs : null;
     const syms = (Array.isArray(tcfg.symbols) ? tcfg.symbols : []).filter((it, i, a) => it && it.s && a.findIndex(x => x && String(x.s).toUpperCase().replace(/[^A-Z0-9]/g, '') === String(it.s).toUpperCase().replace(/[^A-Z0-9]/g, '')) === i).slice(0, 6);
     for (const it of syms) {
       const sym = it.s, asset = tower.assetOf(sym, it.a);
@@ -307,4 +319,9 @@ async function setConfig(store, body) {
 }
 const reset = store => store.setJSON('state', fresh());
 
-module.exports = { PROFILES, getCfg, getState, runLab, summary, setConfig, reset, stepProfile, stepFlip, stats, fresh, costOf };
+// History trade satu varian (maks 200 terbaru) untuk tampilan rinci dan unduh CSV.
+async function history(store, id) {
+  const cfg = await getCfg(store), st = await getState(store), P = cfg.profiles[id]; if (!P) return { id, error: 'varian tidak dikenal' };
+  return { id, name: P.name, desc: P.desc, fwd: st.fwd || null, open: (st.open[id] || []).map(p => ({ s: p.s, dir: p.dir, entry: p.entry, sl: p.sl, tp: p.tp, since: p.t0, price: (st.last[p.s] || {}).price != null ? (st.last[p.s] || {}).price : null })), trades: (st.trades[id] || []).slice(0, 200) };
+}
+module.exports = { history, PROFILES, getCfg, getState, runLab, summary, setConfig, reset, stepProfile, stepFlip, stats, fresh, costOf };

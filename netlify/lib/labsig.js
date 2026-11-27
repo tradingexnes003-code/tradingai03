@@ -136,21 +136,41 @@ Object.assign(EXTRA, {
   g62tf: { ...flipBase, name: 'GOD62-BARU+TREN-H1', trendFilter: true, desc: 'Sama, tetapi hanya masuk bila arah flip searah tren EMA20/50 H1. Menguji apakah filter H1 membantu atau malah mengurangi hasil.' }
 });
 
-// ---- 10 varian God62 Baru tambahan. Semuanya memakai SL keras (EA MT5 mewajibkan SL), 1R virtual = riskAtr x ATR(14) M15.
-// Tiap varian menguji SATU gagasan yang berbeda; 3 varian lama di atas tidak diubah. Parameter baru bernilai nol/mati untuk varian lama.
-const NEWF = { ...flipBase, hardSl: true, riskAtr: 3, tpR: 0, beR: 0, trail: 0, trailAt: 1, confirmN: 0, erMin: 0, volX: 0 };
-Object.assign(EXTRA, {
-  g62s2: { ...NEWF, name: 'GOD62-BARU+SL2', riskAtr: 2, desc: 'SL keras lebih rapat: 2 ATR (1R = 2 ATR). Menguji apakah SL rapat memotong rugi tanpa terlalu sering tersapu. Keluar saat berbalik.' },
-  g62be: { ...NEWF, name: 'GOD62-BARU+BE', beR: 1, desc: 'SL 3 ATR; setelah untung +1R SL digeser ke harga masuk (impas). Keluar saat berbalik atau kena SL/impas.' },
-  g62tr: { ...NEWF, name: 'GOD62-BARU+TRAIL', trail: 1.5, trailAt: 1, desc: 'SL 3 ATR; setelah +1R SL mengekor 1.5 ATR di belakang harga. Mengunci sebagian untung bila harga balik sebelum God 62 berbalik.' },
-  g62t3: { ...NEWF, name: 'GOD62-BARU+TP3R', tpR: 3, desc: 'Gabungan: SL 3 ATR, TP tetap 3R. Keluar mana yang lebih dulu: TP, SL, atau God 62 berbalik.' },
-  g62t15: { ...NEWF, name: 'GOD62-BARU+TP1.5R', riskAtr: 2, tpR: 1.5, desc: 'Gabungan target dekat: SL 2 ATR, TP 1.5R. Keluar mana yang lebih dulu: TP, SL, atau God 62 berbalik.' },
-  g62c2: { ...NEWF, name: 'GOD62-BARU+KONFIRMASI', confirmN: 2, desc: 'Masuk hanya bila arah God 62 bertahan 2 candle setelah flip (masuk lebih telat, tetapi menyaring flip palsu). SL 3 ATR.' },
-  g62er: { ...NEWF, name: 'GOD62-BARU+TREN-KUAT', erMin: 0.3, desc: 'Lewati flip saat pasar sideways: efisiensi harga 20 candle M15 < 0.30. Menguji apakah menghindari pasar datar mengurangi rugi beruntun. SL 3 ATR.' },
-  g62ss: { ...NEWF, name: 'GOD62-BARU+SESI', sess: [7, 20], desc: 'Hanya masuk jam data 07-20 (London sampai New York, jam data broker). Posisi tetap dipegang sampai berbalik. SL 3 ATR.' },
-  g62vl: { ...NEWF, name: 'GOD62-BARU+VOLUME', volX: 1.3, desc: 'Hanya flip yang disertai volume >= 1.3x rata-rata 20 candle (tick volume bila EA mengirimnya, bila belum memakai range candle). SL 3 ATR.' },
-  g62k: { ...NEWF, name: 'GOD62-BARU+KOMBO', riskAtr: 2.5, beR: 1, confirmN: 1, erMin: 0.3, sess: [7, 20], desc: 'Gabungan penyaring: konfirmasi 1 candle + pasar tidak sideways + jam 07-20 + SL 2.5 ATR + impas di +1R. Trade paling sedikit; butuh waktu lebih lama untuk 30 trade.' }
-});
+// ---- Varian God62 Baru lanjutan. Dua varian terbaik uji sebelumnya dijadikan acuan (TRAIL dan TP1.5R, tidak diubah);
+// 8 varian yang tidak lolos (SL2, BE, TP3R, KONFIRMASI, TREN-KUAT, SESI, VOLUME, KOMBO) dihapus dan diganti 30 varian turunan:
+//  - Keluarga TRAIL (15): variasi jarak trailing, titik mulai trailing, lebar SL, dan satu filter/penambah per varian.
+//  - Keluarga TARGET (15): variasi TP, lebar SL, dan satu filter/penambah per varian.
+// Semuanya SL keras (EA MT5 mewajibkan SL); 1R virtual = riskAtr x ATR(14) M15. Varian baru mulai dari nol (tanpa history).
+const NEWF = { ...flipBase, hardSl: true, riskAtr: 3, tpR: 0, beR: 0, trail: 0, trailAt: 1, confirmN: 0, erMin: 0, volX: 0, fam: 'ref' };
+EXTRA.g62tr = { ...NEWF, name: 'GOD62-BARU+TRAIL', trail: 1.5, trailAt: 1, desc: 'ACUAN. SL 3 ATR; setelah +1R SL mengekor 1.5 ATR di belakang harga. Mengunci sebagian untung bila harga balik sebelum God 62 berbalik.' };
+EXTRA.g62t15 = { ...NEWF, name: 'GOD62-BARU+TP1.5R', riskAtr: 2, tpR: 1.5, desc: 'ACUAN. SL 2 ATR, TP 1.5R. Keluar mana yang lebih dulu: TP, SL, atau God 62 berbalik.' };
+const flags = (p, fam) => (p.beR ? ` +BE${p.beR}` : '') + (p.trendFilter ? ' +H1' : '') + (p.erMin ? ' +ER' : '') + (fam === 'trail' && p.tpR ? ` +TP${p.tpR}R` : '') + (fam === 'target' && p.trail ? ` +TR${p.trail}x@${p.trailAt}R` : '');
+const addFam = (id, fam, p) => {
+  const q = { ...NEWF, fam, ...p }, nm = fam === 'trail' ? `G62-TR ${q.trail}x@${q.trailAt}R SL${q.riskAtr}${flags(q, fam)}` : `G62-TP ${q.tpR}R SL${q.riskAtr}${flags(q, fam)}`;
+  const ds = fam === 'trail'
+    ? `Turunan TRAIL: SL ${q.riskAtr} ATR; trailing ${q.trail} ATR mulai setelah +${q.trailAt}R${q.beR ? `; impas di +${q.beR}R` : ''}${q.trendFilter ? '; hanya searah tren EMA H1' : ''}${q.erMin ? '; lewati pasar sideways' : ''}${q.tpR ? `; TP ${q.tpR}R` : ''}. Keluar juga saat God 62 berbalik.`
+    : `Turunan TP1.5R: SL ${q.riskAtr} ATR; TP ${q.tpR}R${q.beR ? `; impas di +${q.beR}R` : ''}${q.trail ? `; trailing ${q.trail} ATR setelah +${q.trailAt}R` : ''}${q.trendFilter ? '; hanya searah tren EMA H1' : ''}${q.erMin ? '; lewati pasar sideways' : ''}. Keluar juga saat God 62 berbalik.`;
+  EXTRA[id] = { ...q, name: nm, desc: ds };
+};
+// keluarga TRAIL (acuan: SL3, trail 1.5x mulai 1R)
+[
+  { riskAtr: 3, trail: 1.0, trailAt: 1 }, { riskAtr: 3, trail: 1.25, trailAt: 1 }, { riskAtr: 3, trail: 2.0, trailAt: 1 },
+  { riskAtr: 3, trail: 1.5, trailAt: 0.5 }, { riskAtr: 3, trail: 1.5, trailAt: 0.75 }, { riskAtr: 3, trail: 1.5, trailAt: 1.5 },
+  { riskAtr: 2.5, trail: 1.5, trailAt: 1 }, { riskAtr: 2, trail: 1.5, trailAt: 1 }, { riskAtr: 2, trail: 1.0, trailAt: 0.75 },
+  { riskAtr: 2, trail: 1.25, trailAt: 1 }, { riskAtr: 4, trail: 2.0, trailAt: 1 },
+  { riskAtr: 3, trail: 1.5, trailAt: 1, beR: 0.7 }, { riskAtr: 3, trail: 1.5, trailAt: 1, trendFilter: true },
+  { riskAtr: 3, trail: 1.5, trailAt: 1, erMin: 0.25 }, { riskAtr: 3, trail: 1.5, trailAt: 1, tpR: 4 }
+].forEach((p, i) => addFam('g62T' + String(i + 1).padStart(2, '0'), 'trail', p));
+// keluarga TARGET (acuan: SL2, TP 1.5R)
+[
+  { riskAtr: 2, tpR: 1.2 }, { riskAtr: 2, tpR: 1.8 }, { riskAtr: 2, tpR: 2 }, { riskAtr: 2, tpR: 2.5 },
+  { riskAtr: 1.5, tpR: 1.5 }, { riskAtr: 1.5, tpR: 2 }, { riskAtr: 2.5, tpR: 1.5 }, { riskAtr: 2.5, tpR: 1.2 },
+  { riskAtr: 3, tpR: 1 }, { riskAtr: 3, tpR: 1.5 }, { riskAtr: 1.75, tpR: 1.5 },
+  { riskAtr: 2, tpR: 1.5, beR: 0.8 }, { riskAtr: 2, tpR: 1.5, trendFilter: true }, { riskAtr: 2, tpR: 1.5, erMin: 0.25 },
+  { riskAtr: 2, tpR: 2, trail: 1.5, trailAt: 1 }
+].forEach((p, i) => addFam('g62P' + String(i + 1).padStart(2, '0'), 'target', p));
+// tiga varian awal ditandai sebagai pembanding
+['g62tv', 'g62sl', 'g62tf'].forEach(id => { EXTRA[id].fam = 'base'; });
 // Rasio efisiensi Kaufman: 1 = bergerak lurus, mendekati 0 = bolak-balik (sideways).
 function effRatio(v, n = 20) {
   if (v.length < n + 1) return 1;

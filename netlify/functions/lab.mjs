@@ -14,6 +14,8 @@ export default async req => {
       if (b.action === 'reset') await lab.reset(store);
       if (b.action === 'run') await lab.runLab(store, tstore, getStore('mt5-trading'), true);
     }
+    const hq = new URL(req.url).searchParams.get('h');
+    if (hq && req.method === 'GET') return J({ role: owner ? 'owner' : 'viewer', history: await lab.history(store, hq) });
     return J({ role: owner ? 'owner' : 'viewer', ...(await lab.summary(store, tstore, getStore('mt5-trading'))) });
   } catch (e) { return J({ error: e.message }, 500); }
 };

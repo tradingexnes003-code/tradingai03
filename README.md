@@ -300,3 +300,15 @@ Tiga varian lama (GOD62-BARU, +SL, +TREN-H1) TIDAK diubah; perilakunya diuji ide
 - Tabel kelayakan: biaya SL (3 ATR, lot minimum) per simbol dibanding risiko per trade, supaya jelas simbol mana yang tidak muat di modal Anda.
 - Lab menyimpan ATR terakhir per simbol dan menampilkan spesifikasi lot dari EA.
 - Semua tetap simulasi (tidak ada order real). Penting: menguji banyak varian pada sinyal yang sama menaikkan risiko tampak bagus karena kebetulan; gunakan syarat >= 30 trade, >= 3 simbol, positif di kedua paruh periode.
+
+## Pembaruan v14u: 30 varian turunan, history per varian, uji mundur CSV
+
+Dari hasil uji maju (TRAIL +7.5% dan TP1.5R +5.2% pada 27 trade; sisanya negatif), varian yang tidak lolos (+SL2, +BE, +TP3R, +KONFIRMASI, +TREN-KUAT, +SESI, +VOLUME, +KOMBO) dihapus dan diganti **30 varian turunan** dari dua acuan itu. Acuan (GOD62-BARU+TRAIL, GOD62-BARU+TP1.5R) dan tiga pembanding awal (GOD62-BARU, +SL, +TREN-H1) tidak diubah.
+
+- **Keluarga TRAIL (15)**: jarak trailing 1.0 sampai 2.0 ATR, titik mulai 0.5 sampai 1.5R, SL 2 sampai 4 ATR, plus satu penambah per varian (impas +0.7R, filter tren H1, filter pasar sideways, TP 4R).
+- **Keluarga TP1.5R (15)**: TP 1.0 sampai 2.5R, SL 1.5 sampai 3 ATR, plus satu penambah per varian (impas +0.8R, filter H1, filter sideways, trailing).
+- **History per varian**: klik 📜 di panel Proyeksi untuk melihat trade tiap varian (masuk, keluar, simbol, arah, entry, exit, %, R bersih, MFE, hasil), posisi terbuka, dan tombol unduh CSV. Trade mencatat MFE/MAE (keuntungan/kerugian terbesar yang sempat tercapai, dalam R).
+- **P(edge)**: peluang rata-rata R per trade benar-benar di atas nol (bootstrap 400 kali, deterministik). Hijau >= 90%, kuning 70-89%, merah di bawahnya.
+- **Uji maju bersih**: hanya trade setelah versi ini terpasang. Varian turunan dipilih setelah melihat data lama, jadi hasil lama tidak bisa dipakai sebagai bukti.
+- **Lab berjalan tiap 5 menit** (fungsi `labmon`), bukan hanya menit 02/17/32/47, supaya flip, TP, dan trailing terdeteksi lebih cepat setelah candle tutup.
+- **Uji mundur cepat**: `node tools/flip_lab.js BTCUSDm.csv ETHUSDm.csv XAUUSDm.csv` menjalankan SEMUA varian pada data historis MT5 (mesin yang sama dengan lab). Data dibagi BELAJAR dan UJI menurut waktu; varian yang bagus di BELAJAR tetapi jelek di UJI adalah kebetulan. Semua trade disimpan ke CSV. Pakai minimal ~3 bulan data M15 per simbol.

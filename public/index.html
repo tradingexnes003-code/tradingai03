@@ -452,26 +452,46 @@ const labF=(v,d=2)=>v==null||v===undefined?'–':(+v).toFixed(d);
 
 const labRp=n=>(n<0?'-':'')+'Rp'+Math.abs(Math.round(n)).toLocaleString('id-ID');
 // Proyeksi modal: R bersih per trade (setelah biaya spread) dikali risiko tetap % dari modal, digabung (compounding). Hanya proyeksi dari simulasi.
+let labHist={},labOpenH={};
+const labTl=t=>t?String(t).slice(5,16):'';
+const labFamName={ref:'acuan',base:'pembanding',trail:'turunan TRAIL',target:'turunan TP1.5R'};
+function labHistHtml(id){
+ const h=labHist[id];if(!h)return'<div class="mu">Memuat history…</div>';
+ const tr=h.trades||[],n=tr.length,w=tr.filter(x=>x.R>0).length,tot=tr.reduce((a,x)=>a+x.R,0),f=h.fwd,fw=f?tr.filter(x=>x.tOpen>=f):[];
+ const sg=x=>(x>0?'+':'')+x;
+ const open=(h.open||[]).map(o=>esc(o.s)+' '+o.dir+' @'+o.entry+(o.sl!=null?' SL '+(+o.sl).toFixed(o.entry>100?2:5):'')+(o.tp!=null?' TP '+o.tp:'')+(o.price!=null?' · kini '+o.price:'')).join(' · ')||'tidak ada';
+ const rowsH=tr.map(t=>`<tr><td style="padding:3px 6px">${labTl(t.bar)}</td><td>${labTl(t.tb)}</td><td><b>${esc(t.s)}</b></td><td>${t.dir}</td><td>${t.entry}</td><td>${t.exit}</td><td style="color:${t.pct>0?'#34d399':'#ff6178'}">${sg(t.pct)}%</td><td style="color:${t.R>0?'#34d399':'#ff6178'}"><b>${sg(t.R)}</b></td><td class="mu">${t.mfe!=null?t.mfe:'–'}</td><td class="mu">${t.res}</td><td class="mu">${f&&t.tOpen>=f?'maju':'lama'}</td></tr>`).join('');
+ return`<div style="padding:8px;border-radius:10px;background:rgba(148,163,184,.08)"><div><b>${esc(h.name)}</b> <span class="mu">${esc(h.desc||'')}</span></div>
+ <div class="mu" style="margin:4px 0">${n} trade tersimpan (maks 200 terbaru) · menang ${n?Math.round(w/n*100):0}% · total ${sg(+tot.toFixed(2))}R · uji maju bersih: ${fw.length} trade, ${sg(+fw.reduce((a,x)=>a+x.R,0).toFixed(2))}R · posisi terbuka: ${open}</div>
+ <button data-csv="${id}">⬇ Unduh CSV</button> <button data-hist="${id}">✕ Tutup</button>
+ ${n?`<div style="overflow-x:auto;max-height:340px;overflow-y:auto;margin-top:6px"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr class="mu" style="text-align:left;position:sticky;top:0;background:#101a2e"><th style="padding:3px 6px">Masuk</th><th>Keluar</th><th>Simbol</th><th>Arah</th><th>Entry</th><th>Exit</th><th>%</th><th>R bersih</th><th>MFE R</th><th>Hasil</th><th>Uji</th></tr>${rowsH}</table></div><div class="mu">MFE = keuntungan terbesar (dalam R) yang sempat dicapai sebelum keluar; berguna untuk menilai apakah TP/trailing terlalu cepat atau terlalu lambat. Uji "maju" = trade setelah v14u terpasang.</div>`:'<div class="mu" style="margin-top:6px">Belum ada trade selesai untuk varian ini.</div>'}</div>`}
+async function labLoadHist(id){try{const r=await api('lab?h='+encodeURIComponent(id));labHist[id]=r.history}catch(e){labHist[id]={name:id,trades:[],desc:'Gagal memuat: '+e.message}}labCapRefresh()}
+function labCsv(id){const h=labHist[id];if(!h)return;const L2=['masuk,keluar,simbol,arah,entry,exit,hasil,R_bersih,persen,mfe_R,mae_R,uji'].concat((h.trades||[]).map(t=>[t.bar,t.tb,t.s,t.dir,t.entry,t.exit,t.res,t.R,t.pct,t.mfe??'',t.mae??'',(h.fwd&&t.tOpen>=h.fwd)?'maju':'lama'].join(',')));const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([L2.join('\n')],{type:'text/csv'}));a.download='history_'+id+'.csv';a.click()}
+function labCapRefresh(){const b=$('labCapBody');if(b)b.innerHTML=labCapInner()}
 function labCapInner(){
- const d=labD,fl=d.rows.filter(r=>r.params&&r.params.entry==='flip'),modal=Math.max(1000,+L('labMod',1000000)||1000000),rk=Math.min(20,Math.max(0.1,+L('labRk',2)||2));
+ const d=labD,all=d.rows.filter(r=>r.params&&r.params.entry==='flip'),fam=L('labFam','all'),fl=all.filter(r=>fam==='all'||(r.params.fam||'base')===fam),modal=Math.max(1000,+L('labMod',1000000)||1000000),rk=Math.min(20,Math.max(0.1,+L('labRk',2)||2));
  const res=fl.map(r=>{const cv=r.curve||[];let eq=modal,pk=modal,dd=0,prev=0;const pts=[modal];
   cv.forEach(c=>{const R=c-prev;prev=c;eq=Math.max(0,eq*(1+rk/100*R));pts.push(eq);pk=Math.max(pk,eq);dd=Math.max(dd,pk>0?(pk-eq)/pk*100:0)});
   return{r,eq,pts,dd,ret:(eq/modal-1)*100,n:cv.length}}).sort((a,b)=>b.ret-a.ret);
- const spark=pts=>{if(pts.length<2)return'<span class="mu">–</span>';const w=110,h=28,mn=Math.min(...pts),mx=Math.max(...pts),sx=i=>i/(pts.length-1)*w,sy=v=>mx===mn?h/2:h-(v-mn)/(mx-mn)*(h-4)-2;
+ const spark=pts=>{if(pts.length<2)return'<span class="mu">–</span>';const w=100,h=26,mn=Math.min(...pts),mx=Math.max(...pts),sx=i=>i/(pts.length-1)*w,sy=v=>mx===mn?h/2:h-(v-mn)/(mx-mn)*(h-4)-2;
   return`<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="${pts[pts.length-1]>=pts[0]?'#34d399':'#ff6178'}" stroke-width="1.7" points="${pts.map((v,i)=>sx(i).toFixed(1)+','+sy(v).toFixed(1)).join(' ')}"/></svg>`};
- const mx=Math.max(1,...res.map(x=>Math.abs(x.ret)));
- const body=res.map((x,i)=>{const up=x.eq>=modal,col=x.n?(up?'#34d399':'#ff6178'):'inherit',w=Math.min(100,Math.abs(x.ret)/mx*100),ok=x.n>=30&&x.ret>0&&x.r.exp>0;
-  return`<tr><td style="padding:5px 6px"><b>${ok?'🏆 ':''}${esc(x.r.name)}</b>${x.r.on?'':' <span class="mu">(mati)</span>'}</td><td>${x.n}</td><td>${x.r.n?x.r.wr+'%':'–'}</td>
+ const mx=Math.max(1,...res.map(x=>Math.abs(x.ret))),sg=x=>(x>0?'+':'')+x;
+ const body=res.map(x=>{const r=x.r,up=x.eq>=modal,col=x.n?(up?'#34d399':'#ff6178'):'inherit',w=Math.min(100,Math.abs(x.ret)/mx*100),fw=r.fwd||{n:0},ok=r.n>=30&&x.ret>0&&r.exp>0&&(r.pPos||0)>=90,pc=r.pPos==null?'inherit':r.pPos>=90?'#34d399':r.pPos>=70?'#fbbf24':'#ff6178';
+  const tr1=`<tr><td style="padding:5px 6px"><b>${ok?'🏆 ':''}${esc(r.name)}</b> <span class="mu">${labFamName[r.params.fam]||''}${r.on?'':' · mati'}</span></td><td>${x.n}</td><td>${r.n?r.wr+'%':'–'}</td>
   <td style="color:${col};font-weight:700;font-size:14px">${x.n?labRp(x.eq-modal):'–'}</td>
-  <td style="min-width:120px">${x.n?`<div style="display:flex;align-items:center;gap:6px"><div style="height:8px;width:${Math.max(4,w)}px;max-width:80px;border-radius:4px;background:${col}"></div><span style="color:${col}">${x.ret>0?'+':''}${x.ret.toFixed(1)}%</span></div>`:'–'}</td>
-  <td>${x.n?x.dd.toFixed(1)+'%':'–'}</td><td>${spark(x.pts)}</td><td class="mu">${x.n<30?'data kurang ('+x.n+'/30)':ok?'lolos syarat awal':'belum meyakinkan'}</td></tr>`}).join('');
+  <td style="min-width:110px">${x.n?`<div style="display:flex;align-items:center;gap:6px"><div style="height:8px;width:${Math.max(4,w)}px;max-width:70px;border-radius:4px;background:${col}"></div><span style="color:${col}">${x.ret>0?'+':''}${x.ret.toFixed(1)}%</span></div>`:'–'}</td>
+  <td>${x.n?x.dd.toFixed(1)+'%':'–'}</td><td style="color:${pc}" title="${r.ciLo!=null?'rata-rata R 95%: '+r.ciLo+' s/d '+r.ciHi:''}">${r.pPos!=null?r.pPos+'%':'–'}</td><td class="mu">${fw.n?fw.n+' trade, '+sg(fw.tot)+'R':'0'}</td><td>${spark(x.pts)}</td><td class="mu">${x.n<30?'data kurang ('+x.n+'/30)':ok?'lolos syarat awal':'belum meyakinkan'}</td><td><button data-hist="${r.id}" style="padding:2px 8px">📜</button></td></tr>`;
+  return tr1+(labOpenH[r.id]?`<tr><td colspan="11" style="padding:4px 6px">${labHistHtml(r.id)}</td></tr>`:'')}).join('');
  const riskRp=modal*rk/100,specs=d.specs||[];
  const feas=Object.entries(d.symbols||{}).map(([k,x])=>{const base=k.replace(/[^A-Za-z0-9]/g,'').toUpperCase(),sp=specs.find(q=>String(q.s).toUpperCase().startsWith(base));
   if(!sp||!x.atr)return`<tr><td style="padding:4px 6px"><b>${esc(k)}</b></td><td colspan="3" class="mu">spesifikasi lot atau ATR belum tersedia (pastikan EA terpasang dan lab sudah jalan)</td></tr>`;
   const c3=3*x.atr*sp.pu*sp.vmin,ok=c3<=riskRp*1.0001;
   return`<tr><td style="padding:4px 6px"><b>${esc(k)}</b></td><td>${labRp(c3)}</td><td>${labRp(riskRp)}</td><td style="color:${ok?'#34d399':'#ff6178'}">${ok?'✅ muat di risiko Anda':'❌ lot minimum terlalu besar: butuh modal ≥ '+labRp(c3/(rk/100))}</td></tr>`}).join('');
- return`<div class="mu" style="margin:6px 0">Proyeksi dari hasil simulasi (R bersih setelah biaya spread), risiko tetap ${rk}% per trade dari modal. <b>Ini proyeksi, bukan hasil nyata dan bukan jaminan.</b> Di bawah 30 trade belum bisa disimpulkan; variasi yang banyak membuat sebagian tampak bagus hanya karena kebetulan, dan semua varian memakai sinyal flip yang sama sehingga hasilnya saling terkait (bukan bukti yang bebas).</div>
- <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr class="mu" style="text-align:left"><th style="padding:4px 6px">Varian (urut hasil)</th><th>Trade</th><th>WR</th><th>Profit</th><th>Return</th><th>Max DD</th><th>Kurva modal</th><th>Status data</th></tr>${body||'<tr><td class="mu" colspan="8">Belum ada data.</td></tr>'}</table></div>
+ const fsel=`<select id="labFam"><option value="all" ${fam==='all'?'selected':''}>Semua (${all.length})</option><option value="ref" ${fam==='ref'?'selected':''}>Acuan</option><option value="trail" ${fam==='trail'?'selected':''}>Turunan TRAIL</option><option value="target" ${fam==='target'?'selected':''}>Turunan TP1.5R</option><option value="base" ${fam==='base'?'selected':''}>Pembanding awal</option></select>`;
+ return`<div class="mu" style="margin:6px 0">Proyeksi dari hasil simulasi (R bersih setelah biaya spread), risiko tetap ${rk}% per trade dari modal. <b>Ini proyeksi, bukan hasil nyata dan bukan jaminan.</b> Di bawah 30 trade belum bisa disimpulkan.
+ <b>P(edge)</b> = peluang rata-rata R per trade benar-benar di atas nol (bootstrap): ≥90% hijau, 70-89% kuning, di bawahnya merah; arahkan kursor ke angkanya untuk rentang 95%. <b>Uji maju bersih</b> = hanya trade setelah v14u terpasang: varian turunan dipilih setelah melihat data lama, jadi hasil lama tidak bisa dipakai sebagai bukti, hanya uji maju yang bersih. Semua varian memakai sinyal flip yang sama, hasilnya saling terkait.</div>
+ <div class="bar" style="margin:4px 0"><span class="mu">Tampilkan</span>${fsel}<span class="mu">Klik 📜 untuk history trade tiap varian.</span></div>
+ <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr class="mu" style="text-align:left"><th style="padding:4px 6px">Varian (urut hasil)</th><th>Trade</th><th>WR</th><th>Profit</th><th>Return</th><th>Max DD</th><th>P(edge)</th><th>Uji maju bersih</th><th>Kurva modal</th><th>Status data</th><th></th></tr>${body||'<tr><td class="mu" colspan="11">Belum ada data.</td></tr>'}</table></div>
  <details style="margin:6px 0"><summary><b>Apakah modal Anda cukup untuk trading real?</b> <span class="mu">biaya SL lot minimum per simbol (SL 3 ATR) vs risiko ${labRp(riskRp)} per trade</span></summary><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr class="mu" style="text-align:left"><th style="padding:4px 6px">Simbol</th><th>Biaya SL (lot min)</th><th>Risiko per trade</th><th>Status</th></tr>${feas||'<tr><td class="mu" colspan="4">Belum ada simbol.</td></tr>'}</table></div><div class="mu">Di modal kecil, lot minimum broker membuat risiko sebenarnya lebih besar dari ${rk}%; simbol bertanda ❌ tidak bisa dijalankan dengan risiko itu di akun real. Kurva dan profit di atas mengandaikan ukuran risiko tepat ${rk}%.</div></details>`;
 }
 function labCapHtml(){const modal=+L('labMod',1000000)||1000000,rk=+L('labRk',2)||2;
@@ -505,7 +525,10 @@ function labRender(){
  <div style="margin-top:8px"><b>Parameter dan rincian per plan</b>${det}</div>
  <div style="margin-top:8px"><b>Log lab</b>${recent}</div>`;
 
- {const m=$('labMod'),k=$('labRk'),upd=()=>{S('labMod',+m.value||1000000);S('labRk',+k.value||2);const b=$('labCapBody');if(b)b.innerHTML=labCapInner()};if(m)m.oninput=upd;if(k)k.oninput=upd}
+ {const m=$('labMod'),k=$('labRk'),upd=()=>{S('labMod',+m.value||1000000);S('labRk',+k.value||2);labCapRefresh()};if(m)m.oninput=upd;if(k)k.oninput=upd;
+  const cb=$('labCapBody');if(cb){cb.onchange=e=>{if(e.target.id==='labFam'){S('labFam',e.target.value);labCapRefresh()}};
+   cb.onclick=e=>{const h=e.target.closest('[data-hist]'),c=e.target.closest('[data-csv]');if(c){labCsv(c.dataset.csv);return}if(h){const id=h.dataset.hist;labOpenH[id]=!labOpenH[id];labCapRefresh();if(labOpenH[id])labLoadHist(id)}};
+   Object.keys(labOpenH).filter(k2=>labOpenH[k2]).forEach(k2=>labLoadHist(k2))}}
  if(own){
   $('labOn').onclick=()=>labCall({action:'config',config:{enabled:!d.cfg.enabled}});
   $('labRun').onclick=()=>{$('labMsg').textContent='Menjalankan lab…';labCall({action:'run'})};
